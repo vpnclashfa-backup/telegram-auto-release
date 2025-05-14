@@ -2,30 +2,44 @@ name: Update InShot Release
 
 on:
   schedule:
-    - cron: '0 0 * * *'
-  workflow_dispatch:
+    - cron: '0 0 * * *'  # اجرا هر روز رأس ۰:۰۰ UTC
+  workflow_dispatch:    # امکان اجرای دستی
 
 jobs:
   update-inshot:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Fetch latest APK URL
         id: fetch_url
+        shell: bash
         run: |
           PAGE_URL="https://www.farsroid.com/inshot-video-editor/"
+          # استفاده از Perl regex برای پوشش پرانتزها
           LATEST=$(curl -s "$PAGE_URL" \
-            | grep -oE 'https://www\.dl\.farsroid\.com/ap/InShot-Pro-[0-9.]+\.apk' \
+            | grep -oP 'https://www\.dl\.farsroid\.com/ap/InShot-Pro-[0-9\.]+\([^)]*\)\.apk' \
             | head -n1)
           echo "download_url=$LATEST" >> "$GITHUB_OUTPUT"
 
-      - name: Parse version
-        id: parse_ver
+      - name: Validate download URL
+        shell: bash
         run: |
           URL="${{ steps.fetch_url.outputs.download_url }}"
-          VER=$(echo "$URL" | grep -oE '[0-9]+(\.[0-9]+)*')
+          echo "Fetch URL: $URL"
+          if [[ -z "$URL" ]]; then
+            echo "⚠️ No APK URL found, exiting."
+            exit 0
+          fi
+
+      - name: Parse version
+        id: parse_ver
+        shell: bash
+        run: |
+          URL="${{ steps.fetch_url.outputs.download_url }}"
+          VER=$(echo "$URL" | grep -oP 'InShot-Pro-\K[0-9\.]+')
           echo "version=$VER" >> "$GITHUB_OUTPUT"
 
       - name: Get latest release info
@@ -38,10 +52,7 @@ jobs:
             const { context, github } = require('@actions/github');
             let latest;
             try {
-              latest = await github.rest.repos.getLatestRelease({
-                owner: context.repo.owner,
-                repo: context.repo.repo
-              });
+              latest = await github.rest.repos.getLatestRelease({ owner: context.repo.owner, repo: context.repo.repo });
             } catch {
               latest = null;
             }
@@ -55,33 +66,28 @@ jobs:
               core.setOutput('size', asset ? asset.size.toString() : '0');
             }
 
-      - name: Validate download URL
-        id: validate
-        run: |
-          URL="${{ steps.fetch_url.outputs.download_url }}"
-          echo "Fetch URL: $URL"
-          if [[ -z "$URL" ]]; then
-            echo "⚠️ No APK URL found, exiting early."
-            exit 0
-          fi
-
-      - name: Compare version and size
+      - name: Compare version and size and download
         id: compare
+        shell: bash
         run: |
           NEW_VER="${{ steps.parse_ver.outputs.version }}"
           OLD_VER="${{ steps.release_data.outputs.tag }}"
           OLD_SIZE="${{ steps.release_data.outputs.size }}"
           echo "New version: $NEW_VER, Old version: $OLD_VER, Old size: $OLD_SIZE"
-          [[ -z "$NEW_VER" || "$NEW_VER" == "$OLD_VER" ]] && exit 0
-          curl -L "$URL" -o InShot-Pro.apk
+          # بررسی تغییر ورژن
+          if [[ -z "$NEW_VER" || "$NEW_VER" == "$OLD_VER" ]]; then
+            echo "No new version detected, exiting."
+            exit 0
+          fi
+          # دانلود APK جدید
+          curl -L "${{ steps.fetch_url.outputs.download_url }}" -o InShot-Pro.apk
           NEW_SIZE=$(stat -c%s InShot-Pro.apk)
-          [[ "$NEW_SIZE" -eq "$OLD_SIZE" ]] && exit 0
+          echo "New size: $NEW_SIZE"
+          # بررسی تغییر حجم
+          if [[ "$NEW_SIZE" -eq "$OLD_SIZE" ]]; then
+            echo "No size change detected, exiting."
+            exit 0
+          fi
 
       - name: Create and upload release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: "v${{ steps.parse_ver.outputs.version }}"
-          name: "InShot Pro v${{ steps.parse_ver.outputs.version }}"
-          files: InShot-Pro.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v
