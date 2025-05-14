@@ -1,0 +1,70 @@
+  - name: Fetch latest APK URL
+    id: fetch_url
+    run: |
+      PAGE_URL="https://www.farsroid.com/inshot-video-editor/"
+      # استفاده از regex ساده برای یافتن لینک
+      LATEST=$(curl -s "$PAGE_URL" \
+        | grep -oE 'https://www\.dl\.farsroid\.com/ap/InShot-Pro-[0-9.]+\\.apk' \
+        | head -n1)
+      echo download_url="$LATEST" >> $GITHUB_OUTPUT
+
+  - name: Parse version
+    id: parse_ver
+    run: |
+      URL="${{ steps.fetch_url.outputs.download_url }}"
+      VER=$(echo "$URL" | grep -oE '[0-9]+(\.[0-9]+)*')
+      echo version="$VER" >> $GITHUB_OUTPUT
+
+  - name: Get latest release info
+    id: release_data
+    uses: actions/github-script@v6
+    with:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+      script: |
+        const core = require('@actions/core');
+        const { github, context } = require('@actions/github');
+        let latest;
+        try {
+          latest = await github.rest.repos.getLatestRelease({
+            owner: context.repo.owner,
+            repo: context.repo.repo
+          });
+        } catch {
+          latest = null;
+        }
+        if (!latest) {
+          core.setOutput('tag', '');
+          core.setOutput('size', '0');
+        } else {
+          const tag = latest.data.tag_name;
+          const asset = latest.data.assets.find(a => a.name === 'InShot-Pro.apk');
+          const size = asset ? asset.size : 0;
+          core.setOutput('tag', tag.replace(/^v/, ''));
+          core.setOutput('size', size.toString());
+        }
+
+  - name: Compare and download
+    id: compare
+    run: |
+      NEW_VER="${{ steps.parse_ver.outputs.version }}"
+      OLD_VER="${{ steps.release_data.outputs.tag }}"
+      OLD_SIZE="${{ steps.release_data.outputs.size }}"
+      echo "Found new:$NEW_VER old:$OLD_VER size:$OLD_SIZE"
+      if [[ -z "$NEW_VER" || "$NEW_VER" == "$OLD_VER" ]]; then
+        echo "No new version" && exit 0
+      fi
+      URL="${{ steps.fetch_url.outputs.download_url }}"
+      curl -L "$URL" -o InShot-Pro.apk
+      NEW_SIZE=$(stat -c%s InShot-Pro.apk)
+      if [[ "$NEW_SIZE" -eq "$OLD_SIZE" ]]; then
+        echo "Size unchanged" && exit 0
+      fi
+
+  - name: Create release
+    uses: softprops/action-gh-release@v1
+    with:
+      tag_name: "v${{ steps.parse_ver.outputs.version }}"
+      name: "InShot Pro v${{ steps.parse_ver.outputs.version }}"
+      assets: InShot-Pro.apk
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
