@@ -2,14 +2,14 @@ name: Update InShot Release
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # اجرا هر روز رأس ۰:۰۰ UTC
-  workflow_dispatch:      # اجرا دستی هم فعال است
+    - cron: '0 0 * * *'
+  workflow_dispatch:
 
 jobs:
   update-inshot:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v3
 
       - name: Fetch latest APK URL
@@ -55,17 +55,26 @@ jobs:
               core.setOutput('size', asset ? asset.size.toString() : '0');
             }
 
+      - name: Validate download URL
+        id: validate
+        run: |
+          URL="${{ steps.fetch_url.outputs.download_url }}"
+          echo "Fetch URL: $URL"
+          if [[ -z "$URL" ]]; then
+            echo "⚠️ No APK URL found, exiting early."
+            exit 0
+          fi
+
       - name: Compare version and size
         id: compare
         run: |
           NEW_VER="${{ steps.parse_ver.outputs.version }}"
           OLD_VER="${{ steps.release_data.outputs.tag }}"
           OLD_SIZE="${{ steps.release_data.outputs.size }}"
-          echo "Latest version: $OLD_VER, New version: $NEW_VER"
+          echo "New version: $NEW_VER, Old version: $OLD_VER, Old size: $OLD_SIZE"
           [[ -z "$NEW_VER" || "$NEW_VER" == "$OLD_VER" ]] && exit 0
-          curl -L "${{ steps.fetch_url.outputs.download_url }}" -o InShot-Pro.apk
+          curl -L "$URL" -o InShot-Pro.apk
           NEW_SIZE=$(stat -c%s InShot-Pro.apk)
-          echo "Old size: $OLD_SIZE, New size: $NEW_SIZE"
           [[ "$NEW_SIZE" -eq "$OLD_SIZE" ]] && exit 0
 
       - name: Create and upload release
