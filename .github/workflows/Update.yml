@@ -2,8 +2,8 @@ name: Update InShot Release
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # اجرا هر روز رأس ۰۰:۰۰ UTC
-  workflow_dispatch:    # امکان اجرای دستی
+    - cron: '0 0 * * *'    # اجرا هر روز رأس ۰۰:۰۰ UTC
+  workflow_dispatch:      # فعال‌سازی اجرا دستی
 
 jobs:
   update-inshot:
@@ -18,16 +18,18 @@ jobs:
         shell: bash
         run: |
           PAGE_URL="https://www.farsroid.com/inshot-video-editor/"
+          # استخراج لینک دانلود با پوشش پرانتزهای نسخه
           LATEST=$(curl -s "$PAGE_URL" \
             | grep -oP 'https://www\.dl\.farsroid\.com/ap/InShot-Pro-[0-9\.]+\([^)]*\)\.apk' \
             | head -n1)
           echo "download_url=$LATEST" >> "$GITHUB_OUTPUT"
 
       - name: Validate download URL
+        id: validate_url
         shell: bash
         run: |
           URL="${{ steps.fetch_url.outputs.download_url }}"
-          echo "Fetch URL: $URL"
+          echo "Fetched URL: $URL"
           if [[ -z "$URL" ]]; then
             echo "⚠️ No APK URL found, exiting."
             exit 0
@@ -42,7 +44,7 @@ jobs:
           echo "version=$VER" >> "$GITHUB_OUTPUT"
 
       - name: Get latest release info
-        id: release_data
+        id: release_info
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -51,7 +53,10 @@ jobs:
             const { context, github } = require('@actions/github');
             let latest;
             try {
-              latest = await github.rest.repos.getLatestRelease({ owner: context.repo.owner, repo: context.repo.repo });
+              latest = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo
+              });
             } catch {
               latest = null;
             }
@@ -65,23 +70,24 @@ jobs:
               core.setOutput('size', asset ? asset.size.toString() : '0');
             }
 
-      - name: Compare version and size and download
+      - name: Compare version and download if changed
         id: compare
         shell: bash
         run: |
           NEW_VER="${{ steps.parse_ver.outputs.version }}"
-          OLD_VER="${{ steps.release_data.outputs.tag }}"
-          OLD_SIZE="${{ steps.release_data.outputs.size }}"
-          echo "New version: $NEW_VER, Old version: $OLD_VER, Old size: $OLD_SIZE"
+          OLD_VER="${{ steps.release_info.outputs.tag }}"
+          OLD_SIZE="${{ steps.release_info.outputs.size }}"
+          echo "New version: $NEW_VER | Old: $OLD_VER | Old size: $OLD_SIZE"
+          # اگر نسخه یا حجم تغییر نکرده باشد، متوقف کن
           if [[ -z "$NEW_VER" || "$NEW_VER" == "$OLD_VER" ]]; then
-            echo "No new version detected, exiting."
+            echo "No new version, exiting."
             exit 0
           fi
           curl -L "${{ steps.fetch_url.outputs.download_url }}" -o InShot-Pro.apk
           NEW_SIZE=$(stat -c%s InShot-Pro.apk)
           echo "New size: $NEW_SIZE"
           if [[ "$NEW_SIZE" -eq "$OLD_SIZE" ]]; then
-            echo "No size change detected, exiting."
+            echo "Size unchanged, exiting."
             exit 0
           fi
 
