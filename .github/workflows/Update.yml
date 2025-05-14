@@ -1,101 +1,110 @@
-name: Update InShot Release
+name: Check and Upload New Telegram Versions
 
 on:
   schedule:
-    - cron: '0 0 * * *'    # اجرا هر روز رأس ۰۰:۰۰ UTC
-  workflow_dispatch:      # فعال‌سازی اجرا دستی
+    - cron: '0 0 * * *' # هر روز ساعت 00:00 اجرا می‌شود
+  workflow_dispatch: # امکان اجرای دستی
 
 jobs:
-  update-inshot:
+  check_and_upload:
     runs-on: ubuntu-latest
     steps:
-
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v3
 
-      - name: Fetch latest APK URL
-        id: fetch_url
-        shell: bash
+      - name: Get Current Date
+        id: date
+        run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
+
+      - name: Check for Telegram Desktop (Windows) Update
+        id: telegram_windows
         run: |
-          PAGE_URL="https://www.farsroid.com/inshot-video-editor/"
-          # استخراج لینک دانلود با پوشش پرانتزهای نسخه
-          LATEST=$(curl -s "$PAGE_URL" \
-            | grep -oP 'https://www\.dl\.farsroid\.com/ap/InShot-Pro-[0-9\.]+\([^)]*\)\.apk' \
-            | head -n1)
-          echo "download_url=$LATEST" >> "$GITHUB_OUTPUT"
+          # در این بخش باید اسکریپتی برای بررسی آخرین نسخه ویندوز تلگرام نوشته شود.
+          # این اسکریپت می‌تواند از طریق وب اسکرپینگ یا API (در صورت وجود) انجام شود.
+          # به عنوان مثال، می‌توانید از curl یا wget برای دانلود صفحه وب و grep یا سایر ابزارها برای استخراج شماره نسخه و لینک دانلود استفاده کنید.
+          # در نهایت، شماره نسخه و لینک دانلود را به عنوان خروجی تنظیم کنید.
+          # مثال ساده (نیاز به تکمیل و بهبود دارد):
+          LATEST_WINDOWS_VERSION_URL="https://desktop.telegram.org/" # آدرس ممکن است نیاز به تغییر داشته باشد
+          # فرض کنید لینک دانلود مستقیم در صفحه وجود دارد و با الگوی خاصی قابل شناسایی است.
+          # DOWNLOAD_LINK_WINDOWS=$(curl -s $LATEST_WINDOWS_VERSION_URL | grep -oP 'href="\K[^"]*tsetup[^"]*\.exe' | head -n 1)
+          # VERSION_WINDOWS=$(echo $DOWNLOAD_LINK_WINDOWS | grep -oP 'tsetup\.(\d+\.\d+\.\d+)\.exe' | sed 's/tsetup\.//;s/\.exe//')
 
-      - name: Validate download URL
-        id: validate_url
-        shell: bash
+          # اگر نسخه جدیدی پیدا شد:
+          # echo "::set-output name=new_version_windows::true"
+          # echo "::set-output name=version_windows::${VERSION_WINDOWS}"
+          # echo "::set-output name=download_url_windows::https://desktop.telegram.org/${DOWNLOAD_LINK_WINDOWS}" # آدرس دانلود ممکن است نیاز به تغییر داشته باشد
+
+          # اگر نسخه جدیدی پیدا نشد:
+          echo "::set-output name=new_version_windows::false"
+          echo "بررسی نسخه ویندوز تلگرام در این مرحله انجام می‌شود. (نیاز به پیاده‌سازی اسکریپت)"
+
+      - name: Download and Upload Telegram Desktop (Windows)
+        if: steps.telegram_windows.outputs.new_version_windows == 'true'
         run: |
-          URL="${{ steps.fetch_url.outputs.download_url }}"
-          echo "Fetched URL: $URL"
-          if [[ -z "$URL" ]]; then
-            echo "⚠️ No APK URL found, exiting."
-            exit 0
-          fi
+          VERSION_WINDOWS=${{ steps.telegram_windows.outputs.version_windows }}
+          DOWNLOAD_URL_WINDOWS=${{ steps.telegram_windows.outputs.download_url_windows }}
+          FILE_NAME_WINDOWS="Telegram_Desktop_v${VERSION_WINDOWS}.exe"
 
-      - name: Parse version
-        id: parse_ver
-        shell: bash
-        run: |
-          URL="${{ steps.fetch_url.outputs.download_url }}"
-          VER=$(echo "$URL" | grep -oP 'InShot-Pro-\K[0-9\.]+')
-          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "Downloading Telegram Desktop $VERSION_WINDOWS..."
+          curl -L -o $FILE_NAME_WINDOWS $DOWNLOAD_URL_WINDOWS
 
-      - name: Get latest release info
-        id: release_info
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const core = require('@actions/core');
-            const { context, github } = require('@actions/github');
-            let latest;
-            try {
-              latest = await github.rest.repos.getLatestRelease({
-                owner: context.repo.owner,
-                repo: context.repo.repo
-              });
-            } catch {
-              latest = null;
-            }
-            if (!latest) {
-              core.setOutput('tag', '');
-              core.setOutput('size', '0');
-            } else {
-              const tag = latest.data.tag_name.replace(/^v/, '');
-              const asset = latest.data.assets.find(a => a.name === 'InShot-Pro.apk');
-              core.setOutput('tag', tag);
-              core.setOutput('size', asset ? asset.size.toString() : '0');
-            }
-
-      - name: Compare version and download if changed
-        id: compare
-        shell: bash
-        run: |
-          NEW_VER="${{ steps.parse_ver.outputs.version }}"
-          OLD_VER="${{ steps.release_info.outputs.tag }}"
-          OLD_SIZE="${{ steps.release_info.outputs.size }}"
-          echo "New version: $NEW_VER | Old: $OLD_VER | Old size: $OLD_SIZE"
-          # اگر نسخه یا حجم تغییر نکرده باشد، متوقف کن
-          if [[ -z "$NEW_VER" || "$NEW_VER" == "$OLD_VER" ]]; then
-            echo "No new version, exiting."
-            exit 0
-          fi
-          curl -L "${{ steps.fetch_url.outputs.download_url }}" -o InShot-Pro.apk
-          NEW_SIZE=$(stat -c%s InShot-Pro.apk)
-          echo "New size: $NEW_SIZE"
-          if [[ "$NEW_SIZE" -eq "$OLD_SIZE" ]]; then
-            echo "Size unchanged, exiting."
-            exit 0
-          fi
-
-      - name: Create and upload release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: "v${{ steps.parse_ver.outputs.version }}"
-          name: "InShot Pro v${{ steps.parse_ver.outputs.version }}"
-          assets: InShot-Pro.apk
+          echo "Uploading $FILE_NAME_WINDOWS to release..."
+          gh release upload "telegram-updates-${{ steps.date.outputs.date }}" $FILE_NAME_WINDOWS --clobber
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for Telegram Android Update
+        id: telegram_android
+        run: |
+          # در این بخش باید اسکریپتی برای بررسی آخرین نسخه اندروید تلگرام نوشته شود.
+          # این اسکریپت می‌تواند از طریق وب اسکرپینگ وب‌سایت رسمی تلگرام یا منابع معتبر دیگر انجام شود.
+          # به عنوان مثال، می‌توانید صفحه دانلود تلگرام برای اندروید را بررسی کنید.
+          # در نهایت، شماره نسخه و لینک دانلود را به عنوان خروجی تنظیم کنید.
+          # مثال ساده (نیاز به تکمیل و بهبود دارد):
+          LATEST_ANDROID_VERSION_URL="https://telegram.org/android" # آدرس ممکن است نیاز به تغییر داشته باشد
+          # فرض کنید لینک دانلود مستقیم APK در صفحه وجود دارد و با الگوی خاصی قابل شناسایی است.
+          # DOWNLOAD_LINK_ANDROID=$(curl -s $LATEST_ANDROID_VERSION_URL | grep -oP 'href="\K[^"]*telegram-android[^"]*\.apk' | head -n 1)
+          # VERSION_ANDROID=$(echo $DOWNLOAD_LINK_ANDROID | grep -oP '(\d+\.\d+\.\d+)\.apk' | sed 's/\.apk//')
+
+
+          # اگر نسخه جدیدی پیدا شد:
+          # echo "::set-output name=new_version_android::true"
+          # echo "::set-output name=version_android::${VERSION_ANDROID}"
+          # echo "::set-output name=download_url_android::${DOWNLOAD_LINK_ANDROID}" # آدرس دانلود ممکن است نیاز به تغییر داشته باشد
+
+          # اگر نسخه جدیدی پیدا نشد:
+          echo "::set-output name=new_version_android::false"
+          echo "بررسی نسخه اندروید تلگرام در این مرحله انجام می‌شود. (نیاز به پیاده‌سازی اسکریپت)"
+
+      - name: Download and Upload Telegram Android
+        if: steps.telegram_android.outputs.new_version_android == 'true'
+        run: |
+          VERSION_ANDROID=${{ steps.telegram_android.outputs.version_android }}
+          DOWNLOAD_URL_ANDROID=${{ steps.telegram_android.outputs.download_url_android }}
+          FILE_NAME_ANDROID="Telegram_Android_v${VERSION_ANDROID}.apk"
+
+          echo "Downloading Telegram Android $VERSION_ANDROID..."
+          curl -L -o $FILE_NAME_ANDROID $DOWNLOAD_URL_ANDROID
+
+          echo "Uploading $FILE_NAME_ANDROID to release..."
+          gh release upload "telegram-updates-${{ steps.date.outputs.date }}" $FILE_NAME_ANDROID --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Release if new version found
+        if: steps.telegram_windows.outputs.new_version_windows == 'true' || steps.telegram_android.outputs.new_version_android == 'true'
+        run: |
+          gh release create "telegram-updates-${{ steps.date.outputs.date }}" \
+            --title "Telegram Updates - ${{ steps.date.outputs.date }}" \
+            --notes "New versions of Telegram applications." \
+            --prerelease # یا --latest اگر می‌خواهید به عنوان آخرین ریلیز پایدار علامت‌گذاری شود
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # این مرحله باید قبل از آپلود فایل‌ها اجرا شود اگر ریلیز وجود ندارد.
+        # در کد بالا، فرض شده که ریلیز از قبل ایجاد شده یا با اولین آپلود ایجاد می‌شود (به دلیل --clobber در gh release upload)
+        # برای اطمینان، می‌توانید این مرحله را قبل از آپلودها قرار دهید و با if بررسی کنید که آیا ریلیز از قبل وجود دارد یا نه.
+        # یک راه بهتر، ابتدا تلاش برای ایجاد ریلیز و در صورت خطا (اگر ریلیز وجود دارد) ادامه دادن است.
+        # یا اینکه با یک تگ خاص برای هر روز ریلیز ایجاد کنید و فایل‌ها را به آن اضافه کنید.
+        # کد بالا برای سادگی فرض می‌کند که `gh release upload` در صورت عدم وجود ریلیز، آن را ایجاد می‌کند یا به ریلیز موجود اضافه می‌کند (بسته به رفتار `gh` و وجود فلگ `--clobber`).
+        # برای ایجاد ریلیز فقط در صورتی که وجود ندارد:
+        # gh release view "telegram-updates-${{ steps.date.outputs.date }}" || gh release create "telegram-updates-${{ steps.date.outputs.date }}" --title "Telegram Updates - ${{ steps.date.outputs.date }}" --notes "New versions of Telegram applications."
