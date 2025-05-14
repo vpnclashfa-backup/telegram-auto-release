@@ -35,7 +35,7 @@ jobs:
       - name: Check for Telegram Desktop (Windows) Update
         id: check_telegram_desktop
         run: |
-          python .github/scripts/check_telegram.py windows
+          python scripts/check_telegram.py windows
 
       - name: Download and Prepare Telegram Desktop (Windows)
         if: steps.check_telegram_desktop.outputs.new_version_available == 'true'
@@ -66,7 +66,7 @@ jobs:
       - name: Check for Telegram Android Update
         id: check_telegram_android
         run: |
-          python .github/scripts/check_telegram.py android
+          python scripts/check_telegram.py android
 
       - name: Download and Prepare Telegram Android
         if: steps.check_telegram_android.outputs.new_version_available == 'true'
