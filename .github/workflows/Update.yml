@@ -2,7 +2,7 @@ name: Update InShot Release
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # اجرا هر روز رأس ۰:۰۰ UTC
+    - cron: '0 0 * * *'  # اجرا هر روز رأس ۰۰:۰۰ UTC
   workflow_dispatch:    # امکان اجرای دستی
 
 jobs:
@@ -18,7 +18,6 @@ jobs:
         shell: bash
         run: |
           PAGE_URL="https://www.farsroid.com/inshot-video-editor/"
-          # استفاده از Perl regex برای پوشش پرانتزها
           LATEST=$(curl -s "$PAGE_URL" \
             | grep -oP 'https://www\.dl\.farsroid\.com/ap/InShot-Pro-[0-9\.]+\([^)]*\)\.apk' \
             | head -n1)
@@ -74,20 +73,23 @@ jobs:
           OLD_VER="${{ steps.release_data.outputs.tag }}"
           OLD_SIZE="${{ steps.release_data.outputs.size }}"
           echo "New version: $NEW_VER, Old version: $OLD_VER, Old size: $OLD_SIZE"
-          # بررسی تغییر ورژن
           if [[ -z "$NEW_VER" || "$NEW_VER" == "$OLD_VER" ]]; then
             echo "No new version detected, exiting."
             exit 0
           fi
-          # دانلود APK جدید
           curl -L "${{ steps.fetch_url.outputs.download_url }}" -o InShot-Pro.apk
           NEW_SIZE=$(stat -c%s InShot-Pro.apk)
           echo "New size: $NEW_SIZE"
-          # بررسی تغییر حجم
           if [[ "$NEW_SIZE" -eq "$OLD_SIZE" ]]; then
             echo "No size change detected, exiting."
             exit 0
           fi
 
       - name: Create and upload release
-        uses: softprops/action-gh-release@v
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: "v${{ steps.parse_ver.outputs.version }}"
+          name: "InShot Pro v${{ steps.parse_ver.outputs.version }}"
+          assets: InShot-Pro.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
