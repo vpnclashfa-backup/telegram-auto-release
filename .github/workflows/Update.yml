@@ -2,18 +2,17 @@
     id: fetch_url
     run: |
       PAGE_URL="https://www.farsroid.com/inshot-video-editor/"
-      # استفاده از regex ساده برای یافتن لینک
       LATEST=$(curl -s "$PAGE_URL" \
-        | grep -oE 'https://www\.dl\.farsroid\.com/ap/InShot-Pro-[0-9.]+\\.apk' \
+        | grep -oE 'https://www\.dl\.farsroid\.com/ap/InShot-Pro-[0-9.]+\.apk' \
         | head -n1)
-      echo download_url="$LATEST" >> $GITHUB_OUTPUT
+      echo "download_url=$LATEST" >> "$GITHUB_OUTPUT"
 
   - name: Parse version
     id: parse_ver
     run: |
       URL="${{ steps.fetch_url.outputs.download_url }}"
       VER=$(echo "$URL" | grep -oE '[0-9]+(\.[0-9]+)*')
-      echo version="$VER" >> $GITHUB_OUTPUT
+      echo "version=$VER" >> "$GITHUB_OUTPUT"
 
   - name: Get latest release info
     id: release_data
@@ -22,7 +21,8 @@
       github-token: ${{ secrets.GITHUB_TOKEN }}
       script: |
         const core = require('@actions/core');
-        const { github, context } = require('@actions/github');
+        const githubModule = require('@actions/github');
+        const { context, github } = githubModule;
         let latest;
         try {
           latest = await github.rest.repos.getLatestRelease({
@@ -36,10 +36,10 @@
           core.setOutput('tag', '');
           core.setOutput('size', '0');
         } else {
-          const tag = latest.data.tag_name;
+          const tag = latest.data.tag_name.replace(/^v/, '');
           const asset = latest.data.assets.find(a => a.name === 'InShot-Pro.apk');
           const size = asset ? asset.size : 0;
-          core.setOutput('tag', tag.replace(/^v/, ''));
+          core.setOutput('tag', tag);
           core.setOutput('size', size.toString());
         }
 
@@ -65,6 +65,6 @@
     with:
       tag_name: "v${{ steps.parse_ver.outputs.version }}"
       name: "InShot Pro v${{ steps.parse_ver.outputs.version }}"
-      assets: InShot-Pro.apk
+      assets: "InShot-Pro.apk"
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
