@@ -2,109 +2,108 @@ name: Check and Upload New Telegram Versions
 
 on:
   schedule:
-    - cron: '0 0 * * *' # هر روز ساعت 00:00 اجرا می‌شود
+    - cron: '0 8 * * *' # هر روز ساعت 8 صبح UTC اجرا می‌شود
   workflow_dispatch: # امکان اجرای دستی
 
 jobs:
   check_and_upload:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # برای ایجاد ریلیز و آپلود فایل‌ها
+
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Python dependencies
+        run: pip install requests beautifulsoup4
 
       - name: Get Current Date
         id: date
-        run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
+        run: echo "TODAY=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Create version tracking file if not exists
+        run: |
+          touch last_known_telegram_desktop_version.txt
+          touch last_known_telegram_android_version.txt
 
       - name: Check for Telegram Desktop (Windows) Update
-        id: telegram_windows
+        id: check_telegram_desktop
         run: |
-          # در این بخش باید اسکریپتی برای بررسی آخرین نسخه ویندوز تلگرام نوشته شود.
-          # این اسکریپت می‌تواند از طریق وب اسکرپینگ یا API (در صورت وجود) انجام شود.
-          # به عنوان مثال، می‌توانید از curl یا wget برای دانلود صفحه وب و grep یا سایر ابزارها برای استخراج شماره نسخه و لینک دانلود استفاده کنید.
-          # در نهایت، شماره نسخه و لینک دانلود را به عنوان خروجی تنظیم کنید.
-          # مثال ساده (نیاز به تکمیل و بهبود دارد):
-          LATEST_WINDOWS_VERSION_URL="https://desktop.telegram.org/" # آدرس ممکن است نیاز به تغییر داشته باشد
-          # فرض کنید لینک دانلود مستقیم در صفحه وجود دارد و با الگوی خاصی قابل شناسایی است.
-          # DOWNLOAD_LINK_WINDOWS=$(curl -s $LATEST_WINDOWS_VERSION_URL | grep -oP 'href="\K[^"]*tsetup[^"]*\.exe' | head -n 1)
-          # VERSION_WINDOWS=$(echo $DOWNLOAD_LINK_WINDOWS | grep -oP 'tsetup\.(\d+\.\d+\.\d+)\.exe' | sed 's/tsetup\.//;s/\.exe//')
+          python .github/scripts/check_telegram.py windows
 
-          # اگر نسخه جدیدی پیدا شد:
-          # echo "::set-output name=new_version_windows::true"
-          # echo "::set-output name=version_windows::${VERSION_WINDOWS}"
-          # echo "::set-output name=download_url_windows::https://desktop.telegram.org/${DOWNLOAD_LINK_WINDOWS}" # آدرس دانلود ممکن است نیاز به تغییر داشته باشد
-
-          # اگر نسخه جدیدی پیدا نشد:
-          echo "::set-output name=new_version_windows::false"
-          echo "بررسی نسخه ویندوز تلگرام در این مرحله انجام می‌شود. (نیاز به پیاده‌سازی اسکریپت)"
-
-      - name: Download and Upload Telegram Desktop (Windows)
-        if: steps.telegram_windows.outputs.new_version_windows == 'true'
+      - name: Download and Prepare Telegram Desktop (Windows)
+        if: steps.check_telegram_desktop.outputs.new_version_available == 'true'
+        id: download_desktop
         run: |
-          VERSION_WINDOWS=${{ steps.telegram_windows.outputs.version_windows }}
-          DOWNLOAD_URL_WINDOWS=${{ steps.telegram_windows.outputs.download_url_windows }}
-          FILE_NAME_WINDOWS="Telegram_Desktop_v${VERSION_WINDOWS}.exe"
+          VERSION=$(echo "${{ steps.check_telegram_desktop.outputs.version }}" | sed 's/[^0-9.]//g') # پاکسازی احتمالی نام نسخه
+          DOWNLOAD_URL="${{ steps.check_telegram_desktop.outputs.download_url }}"
+          FILE_NAME="Telegram_Desktop_v${VERSION}_${{ steps.date.outputs.TODAY }}.exe"
+          echo "Downloading Telegram Desktop $VERSION from $DOWNLOAD_URL..."
+          curl -L -o "$FILE_NAME" "$DOWNLOAD_URL"
+          echo "FILE_PATH=$(pwd)/$FILE_NAME" >> $GITHUB_OUTPUT
+          echo "RELEASE_TAG=telegram-desktop-v${VERSION}-${{ steps.date.outputs.TODAY }}" >> $GITHUB_OUTPUT
+          echo "RELEASE_TITLE=Telegram Desktop v${VERSION} (${{ steps.date.outputs.TODAY }})" >> $GITHUB_OUTPUT
+          echo "FILE_NAME_ASSET=$FILE_NAME" >> $GITHUB_OUTPUT
 
-          echo "Downloading Telegram Desktop $VERSION_WINDOWS..."
-          curl -L -o $FILE_NAME_WINDOWS $DOWNLOAD_URL_WINDOWS
-
-          echo "Uploading $FILE_NAME_WINDOWS to release..."
-          gh release upload "telegram-updates-${{ steps.date.outputs.date }}" $FILE_NAME_WINDOWS --clobber
+      - name: Create Release and Upload Telegram Desktop (Windows)
+        if: steps.check_telegram_desktop.outputs.new_version_available == 'true' && steps.download_desktop.outputs.FILE_PATH
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.download_desktop.outputs.RELEASE_TAG }}" \
+            "${{ steps.download_desktop.outputs.FILE_PATH }}" \
+            --title "${{ steps.download_desktop.outputs.RELEASE_TITLE }}" \
+            --notes "Latest Telegram Desktop (Windows x64) version. Automatic check on ${{ steps.date.outputs.TODAY }}."
+          echo "Telegram Desktop v${{ steps.check_telegram_desktop.outputs.version }} uploaded to release ${{ steps.download_desktop.outputs.RELEASE_TAG }}"
+          echo "${{ steps.check_telegram_desktop.outputs.version }}" > last_known_telegram_desktop_version.txt # ذخیره نسخه جدید
 
       - name: Check for Telegram Android Update
-        id: telegram_android
+        id: check_telegram_android
         run: |
-          # در این بخش باید اسکریپتی برای بررسی آخرین نسخه اندروید تلگرام نوشته شود.
-          # این اسکریپت می‌تواند از طریق وب اسکرپینگ وب‌سایت رسمی تلگرام یا منابع معتبر دیگر انجام شود.
-          # به عنوان مثال، می‌توانید صفحه دانلود تلگرام برای اندروید را بررسی کنید.
-          # در نهایت، شماره نسخه و لینک دانلود را به عنوان خروجی تنظیم کنید.
-          # مثال ساده (نیاز به تکمیل و بهبود دارد):
-          LATEST_ANDROID_VERSION_URL="https://telegram.org/android" # آدرس ممکن است نیاز به تغییر داشته باشد
-          # فرض کنید لینک دانلود مستقیم APK در صفحه وجود دارد و با الگوی خاصی قابل شناسایی است.
-          # DOWNLOAD_LINK_ANDROID=$(curl -s $LATEST_ANDROID_VERSION_URL | grep -oP 'href="\K[^"]*telegram-android[^"]*\.apk' | head -n 1)
-          # VERSION_ANDROID=$(echo $DOWNLOAD_LINK_ANDROID | grep -oP '(\d+\.\d+\.\d+)\.apk' | sed 's/\.apk//')
+          python .github/scripts/check_telegram.py android
 
-
-          # اگر نسخه جدیدی پیدا شد:
-          # echo "::set-output name=new_version_android::true"
-          # echo "::set-output name=version_android::${VERSION_ANDROID}"
-          # echo "::set-output name=download_url_android::${DOWNLOAD_LINK_ANDROID}" # آدرس دانلود ممکن است نیاز به تغییر داشته باشد
-
-          # اگر نسخه جدیدی پیدا نشد:
-          echo "::set-output name=new_version_android::false"
-          echo "بررسی نسخه اندروید تلگرام در این مرحله انجام می‌شود. (نیاز به پیاده‌سازی اسکریپت)"
-
-      - name: Download and Upload Telegram Android
-        if: steps.telegram_android.outputs.new_version_android == 'true'
+      - name: Download and Prepare Telegram Android
+        if: steps.check_telegram_android.outputs.new_version_available == 'true'
+        id: download_android
         run: |
-          VERSION_ANDROID=${{ steps.telegram_android.outputs.version_android }}
-          DOWNLOAD_URL_ANDROID=${{ steps.telegram_android.outputs.download_url_android }}
-          FILE_NAME_ANDROID="Telegram_Android_v${VERSION_ANDROID}.apk"
+          VERSION=$(echo "${{ steps.check_telegram_android.outputs.version }}" | sed 's/[^0-9.]//g') # پاکسازی احتمالی نام نسخه
+          DOWNLOAD_URL="${{ steps.check_telegram_android.outputs.download_url }}"
+          FILE_NAME="Telegram_Android_v${VERSION}_${{ steps.date.outputs.TODAY }}.apk"
+          echo "Downloading Telegram Android $VERSION from $DOWNLOAD_URL..."
+          curl -L -o "$FILE_NAME" "$DOWNLOAD_URL"
+          echo "FILE_PATH=$(pwd)/$FILE_NAME" >> $GITHUB_OUTPUT
+          echo "RELEASE_TAG=telegram-android-v${VERSION}-${{ steps.date.outputs.TODAY }}" >> $GITHUB_OUTPUT
+          echo "RELEASE_TITLE=Telegram Android v${VERSION} (${{ steps.date.outputs.TODAY }})" >> $GITHUB_OUTPUT
+          echo "FILE_NAME_ASSET=$FILE_NAME" >> $GITHUB_OUTPUT
 
-          echo "Downloading Telegram Android $VERSION_ANDROID..."
-          curl -L -o $FILE_NAME_ANDROID $DOWNLOAD_URL_ANDROID
-
-          echo "Uploading $FILE_NAME_ANDROID to release..."
-          gh release upload "telegram-updates-${{ steps.date.outputs.date }}" $FILE_NAME_ANDROID --clobber
+      - name: Create Release and Upload Telegram Android
+        if: steps.check_telegram_android.outputs.new_version_available == 'true' && steps.download_android.outputs.FILE_PATH
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create Release if new version found
-        if: steps.telegram_windows.outputs.new_version_windows == 'true' || steps.telegram_android.outputs.new_version_android == 'true'
         run: |
-          gh release create "telegram-updates-${{ steps.date.outputs.date }}" \
-            --title "Telegram Updates - ${{ steps.date.outputs.date }}" \
-            --notes "New versions of Telegram applications." \
-            --prerelease # یا --latest اگر می‌خواهید به عنوان آخرین ریلیز پایدار علامت‌گذاری شود
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # این مرحله باید قبل از آپلود فایل‌ها اجرا شود اگر ریلیز وجود ندارد.
-        # در کد بالا، فرض شده که ریلیز از قبل ایجاد شده یا با اولین آپلود ایجاد می‌شود (به دلیل --clobber در gh release upload)
-        # برای اطمینان، می‌توانید این مرحله را قبل از آپلودها قرار دهید و با if بررسی کنید که آیا ریلیز از قبل وجود دارد یا نه.
-        # یک راه بهتر، ابتدا تلاش برای ایجاد ریلیز و در صورت خطا (اگر ریلیز وجود دارد) ادامه دادن است.
-        # یا اینکه با یک تگ خاص برای هر روز ریلیز ایجاد کنید و فایل‌ها را به آن اضافه کنید.
-        # کد بالا برای سادگی فرض می‌کند که `gh release upload` در صورت عدم وجود ریلیز، آن را ایجاد می‌کند یا به ریلیز موجود اضافه می‌کند (بسته به رفتار `gh` و وجود فلگ `--clobber`).
-        # برای ایجاد ریلیز فقط در صورتی که وجود ندارد:
-        # gh release view "telegram-updates-${{ steps.date.outputs.date }}" || gh release create "telegram-updates-${{ steps.date.outputs.date }}" --title "Telegram Updates - ${{ steps.date.outputs.date }}" --notes "New versions of Telegram applications."
+          gh release create "${{ steps.download_android.outputs.RELEASE_TAG }}" \
+            "${{ steps.download_android.outputs.FILE_PATH }}" \
+            --title "${{ steps.download_android.outputs.RELEASE_TITLE }}" \
+            --notes "Latest Telegram Android APK. Automatic check on ${{ steps.date.outputs.TODAY }}."
+          echo "Telegram Android v${{ steps.check_telegram_android.outputs.version }} uploaded to release ${{ steps.download_android.outputs.RELEASE_TAG }}"
+          echo "${{ steps.check_telegram_android.outputs.version }}" > last_known_telegram_android_version.txt # ذخیره نسخه جدید
+
+      - name: Commit version tracking files
+        if: steps.check_telegram_desktop.outputs.new_version_available == 'true' || steps.check_telegram_android.outputs.new_version_available == 'true'
+        run: |
+          git config --global user.name 'GitHub Action Bot'
+          git config --global user.email 'actions@github.com'
+          git add last_known_telegram_desktop_version.txt last_known_telegram_android_version.txt
+          # بررسی اینکه آیا فایلی برای کامیت وجود دارد
+          if ! git diff --staged --quiet; then
+            git commit -m "Update last known Telegram versions (${{ steps.date.outputs.TODAY }})"
+            git push
+          else
+            echo "No changes in version files to commit."
+          fi
