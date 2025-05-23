@@ -2,7 +2,7 @@ name: Generic App Updater
 
 on:
   schedule:
-    - cron: '0 10 * * *' # هر روز ساعت 10 صبح UTC اجرا می‌شود (متفاوت از قبلی)
+    - cron: '0 10 * * *' # هر روز ساعت 10 صبح UTC اجرا می‌شود
   workflow_dispatch: # امکان اجرای دستی
 
 jobs:
@@ -15,9 +15,6 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          # برای کامیت کردن فایل ردیابی، نیاز به توکن با دسترسی نوشتن داریم
-          # GITHUB_TOKEN به طور پیش فرض این دسترسی را در بخش permissions: contents: write دارد
-          # اما اگر از توکن دیگری استفاده می کنید، مطمئن شوید دسترسی لازم را دارد
           token: ${{ secrets.GITHUB_TOKEN }} 
 
       - name: Set up Python
@@ -34,40 +31,28 @@ jobs:
 
       - name: Create tracking and URL files if not exists
         run: |
-          touch versions_tracker.json # فایل ردیابی جدید
-          touch urls_to_check.txt     # فایل ورودی URL ها
-          # اطمینان از اینکه فایل JSON ردیابی اگر خالی است، یک آبجکت خالی داشته باشد
+          touch versions_tracker.json
+          touch urls_to_check.txt
           if [ ! -s versions_tracker.json ]; then echo "{}" > versions_tracker.json; fi
 
-
       - name: Run App Updater Script
-        id: app_check
+        id: app_check # این id برای دسترسی به خروجی ها استفاده می شود
         run: python scripts/app_updater.py
 
       - name: Process Updates and Create Releases
-        # این مرحله فقط در صورتی اجرا می شود که فایل updates_found.json ایجاد شده و خالی نباشد
-        # jq برای پردازش JSON استفاده می شود. معمولا در ubuntu-latest موجود است.
-        if: steps.app_check.outcome == 'success' && hashFiles('updates_found.json') != '' && $(jq 'length > 0' updates_found.json)
+        # شرط اصلاح شده:
+        if: steps.app_check.outcome == 'success' && steps.app_check.outputs.updates_count > 0
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TODAY_DATE: ${{ steps.date.outputs.TODAY }}
         run: |
-          echo "Processing updates found in updates_found.json..."
+          echo "Processing updates found. Count: ${{ steps.app_check.outputs.updates_count }}"
           UPDATES_FILE="updates_found.json"
           TRACKER_FILE="versions_tracker.json"
-
-          # خواندن فایل ردیابی اولیه
-          # ما فایل ردیابی را در طول حلقه به‌روز می‌کنیم و در انتها ذخیره می‌کنیم
-          # این کار با jq در bash کمی پیچیده است، بهتر است با یک اسکریپت دیگر انجام شود
-          # یا اینکه اسکریپت پایتون پس از موفقیت هر دانلود، فایل ردیابی را آپدیت کند
-          # برای سادگی فعلی، فرض می کنیم فایل ردیابی در انتها توسط یک مرحله جدا کامیت می شود
-          # و اسکریپت پایتون فقط شناسایی می کند.
-          # Workflow فایل ردیابی را بعد از موفقیت هر ریلیز آپدیت می کند.
 
           TEMP_TRACKER_FILE=$(mktemp)
           cp $TRACKER_FILE $TEMP_TRACKER_FILE
 
-          # حلقه روی هر آپدیت پیدا شده در JSON
           jq -c '.[]' $UPDATES_FILE | while IFS= read -r update_item; do
             APP_NAME=$(echo "$update_item" | jq -r '.app_name')
             VERSION=$(echo "$update_item" | jq -r '.version')
@@ -80,20 +65,17 @@ jobs:
 
             echo "Processing: $APP_NAME v$VERSION ($VARIANT)"
 
-            # ایجاد نام فایل و تگ ریلیز
-            # از نام پیشنهادی اسکریپت پایتون استفاده می کنیم
-            # یا یک نام بر اساس تاریخ و نسخه می سازیم
             DOWNLOADED_FILE_NAME="${SUGGESTED_FILENAME}"
-            # تگ ریلیز: appname-variant-version (بدون تاریخ برای جلوگیری از تکرار اگر نسخه یکی باشد)
             RELEASE_TAG_BASE=$(echo "${APP_NAME}_${VARIANT}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/_/g')
             RELEASE_TAG="${RELEASE_TAG_BASE}-v${VERSION}"
             RELEASE_TITLE="$APP_NAME v$VERSION ($VARIANT) - ${TODAY_DATE}"
 
             echo "  Downloading $DOWNLOADED_FILE_NAME from $DOWNLOAD_URL..."
-            curl -L -o "$DOWNLOADED_FILE_NAME" "$DOWNLOAD_URL"
+            # افزودن User-Agent به curl برای جلوگیری از بلاک شدن احتمالی
+            curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -o "$DOWNLOADED_FILE_NAME" "$DOWNLOAD_URL"
             if [ $? -ne 0 ]; then
               echo "  [ERROR] Failed to download $DOWNLOADED_FILE_NAME. Skipping."
-              continue # پرش به آپدیت بعدی
+              continue
             fi
             echo "  Download complete: $DOWNLOADED_FILE_NAME"
 
@@ -106,47 +88,33 @@ jobs:
                 --notes "New version of $APP_NAME ($VARIANT) found on $PAGE_URL. Checked on $TODAY_DATE."
               if [ $? -ne 0 ]; then
                 echo "  [ERROR] Failed to create release $RELEASE_TAG. Asset might not be uploaded."
-                # حتی اگر ریلیز ناموفق بود، فایل دانلود شده را حذف می کنیم تا فضای دیسک پر نشود
                 rm -f "$DOWNLOADED_FILE_NAME"
-                continue # پرش به آپدیت بعدی
+                continue
               fi
               echo "  Release $RELEASE_TAG created and $DOWNLOADED_FILE_NAME uploaded."
-              # به‌روزرسانی فایل ردیابی موقت
               jq --arg id "$TRACKING_ID" --arg ver "$CURRENT_VERSION_FOR_TRACKING" '.[$id] = $ver' $TEMP_TRACKER_FILE > $TEMP_TRACKER_FILE.tmp && mv $TEMP_TRACKER_FILE.tmp $TEMP_TRACKER_FILE
-
             else
               echo "  Release $RELEASE_TAG already exists. Skipping upload."
-              # حتی اگر ریلیز وجود داشته باشد، فایل ردیابی را به‌روز می‌کنیم تا از بررسی مجدد جلوگیری شود
-               jq --arg id "$TRACKING_ID" --arg ver "$CURRENT_VERSION_FOR_TRACKING" '.[$id] = $ver' $TEMP_TRACKER_FILE > $TEMP_TRACKER_FILE.tmp && mv $TEMP_TRACKER_FILE.tmp $TEMP_TRACKER_FILE
+              jq --arg id "$TRACKING_ID" --arg ver "$CURRENT_VERSION_FOR_TRACKING" '.[$id] = $ver' $TEMP_TRACKER_FILE > $TEMP_TRACKER_FILE.tmp && mv $TEMP_TRACKER_FILE.tmp $TEMP_TRACKER_FILE
             fi
-            # حذف فایل دانلود شده پس از پردازش
             rm -f "$DOWNLOADED_FILE_NAME"
           done
 
-          # جایگزینی فایل ردیابی اصلی با فایل موقت به‌روز شده
           mv $TEMP_TRACKER_FILE $TRACKER_FILE
           echo "Tracker file updated."
 
       - name: Commit Tracking File
-        # این مرحله فقط در صورتی اجرا می شود که فایل ردیابی تغییر کرده باشد
         run: |
           git config --global user.name 'GitHub Action Bot'
           git config --global user.email 'actions@github.com'
           
-          # بررسی تغییرات در فایل ردیابی
           git add versions_tracker.json
+          # فقط اگر فایل versions_tracker.json تغییر کرده باشد کامیت کن
           if ! git diff --staged --quiet versions_tracker.json; then
             echo "Committing changes to versions_tracker.json..."
             git commit -m "Update app versions tracker (${{ steps.date.outputs.TODAY }})"
-            # تلاش برای پوش کردن، ممکن است نیاز به مدیریت خطا داشته باشد اگر پوش شکست بخورد
-            # به عنوان مثال، اگر کامیت های دیگری همزمان پوش شده باشند
-            # retry logic can be added here if needed
             git push || echo "Push failed, possibly due to concurrent updates. Manual check might be needed."
           else
             echo "No changes in versions_tracker.json to commit."
           fi
-        # این شرط را اضافه می کنیم تا فقط در صورت موفقیت مرحله قبل اجرا شود
-        # و همچنین اگر فایل ردیابی واقعا وجود دارد و آپدیت شده.
-        # ساده ترین راه این است که همیشه اجرا شود و git diff تغییرات را بررسی کند.
-        if: always() # همیشه اجرا شود تا بتواند تغییرات را کامیت کند یا بگوید تغییری نیست
-
+        if: always() # این مرحله همیشه اجرا می شود تا بتواند تغییرات را کامیت کند یا بگوید تغییری نیست
