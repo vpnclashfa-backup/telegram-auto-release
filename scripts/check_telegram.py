@@ -3,75 +3,76 @@ from bs4 import BeautifulSoup
 import re
 import sys
 import os
+from urllib.parse import urljoin # برای ساخت URL
+from packaging.version import parse, InvalidVersion # برای مقایسه نسخه
 
 def get_output_path():
+    """مسیر فایل خروجی GitHub Actions را دریافت می‌کند."""
     return os.environ.get('GITHUB_OUTPUT', 'local_output.txt')
 
 def set_github_output(name, value):
+    """یک متغیر خروجی برای GitHub Actions تنظیم می‌کند."""
     output_path = get_output_path()
-    # print(f"Setting output: {name}={value} to {output_path}") # For local debugging
+    print(f"Setting output: {name}={value}") # برای دیباگ
     with open(output_path, "a") as f:
         f.write(f"{name}={value}\n")
 
 def get_last_known_version(platform):
+    """آخرین نسخه شناخته شده را از فایل می‌خواند."""
     filename = f"last_known_telegram_{platform}_version.txt"
     try:
         with open(filename, "r") as f:
             return f.read().strip()
     except FileNotFoundError:
-        return "0.0.0" # Default to a very old version
+        print(f"Version file '{filename}' not found. Assuming '0.0.0'.")
+        return "0.0.0" # پیش‌فرض به یک نسخه خیلی قدیمی
+
+def compare_versions(current_version, last_known):
+    """نسخه‌ها را با استفاده از کتابخانه packaging مقایسه می‌کند."""
+    try:
+        return parse(current_version) > parse(last_known)
+    except InvalidVersion:
+        print(f"Warning: Could not parse versions '{current_version}' or '{last_known}'. Comparing as strings.")
+        return current_version != last_known # بازگشت به مقایسه رشته‌ای در صورت خطا
 
 def check_desktop_windows():
-    url = "https://desktop.telegram.org/"
+    """نسخه دسکتاپ ویندوز را بررسی می‌کند."""
+    base_url = "https://desktop.telegram.org/"
     try:
-        print(f"Fetching URL: {url}")
-        response = requests.get(url, timeout=20, headers={'User-Agent': 'Mozilla/5.0'})
+        print(f"Fetching URL: {base_url}")
+        response = requests.get(base_url, timeout=30, headers={'User-Agent': 'Mozilla/5.0'})
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
 
-        # === Strategy 1: Find a direct download link with version in href ===
-        # Example: <a href=".../tsetup.x64.4.8.1.exe">
-        download_link_tag = soup.find('a', href=re.compile(r'tsetup\.x64\.(\d+\.\d+\.\d+)\.exe', re.IGNORECASE))
+        # === استراتژی‌ها برای پیدا کردن لینک و نسخه (همچنان شکننده) ===
+        # تلاش برای پیدا کردن لینک با نسخه در href
+        download_link_tag = soup.find('a', href=re.compile(r'(tsetup|tsetup-x64)[.-]v?(\d+\.\d+\.\d+)\.exe', re.IGNORECASE))
+
+        # اگر پیدا نشد، تلاش برای پیدا کردن دکمه دانلود ویندوز
         if not download_link_tag:
-            # === Strategy 2: Find a prominent download button/link for Windows and extract version from text or nearby elements ===
-            # This is highly dependent on website structure
-            # Example: Looking for "Download Telegram for Windows x64" then trying to find version nearby
-            win_section = soup.find('div', class_=re.compile(r'td_download_box.*win|td_download_btn.*win', re.IGNORECASE)) # Common class patterns
+            win_section = soup.find(lambda tag: tag.name == 'a' and ('windows' in tag.text.lower() or 'windows' in tag.get('href', '').lower()) and 'exe' in tag.get('href', '').lower())
             if win_section:
-                 download_link_tag = win_section.find('a', href=re.compile(r'win64|exe', re.IGNORECASE))
-                 if not download_link_tag: # Fallback if no specific link found in section
-                     download_link_tag = soup.find('a', href=re.compile(r'tsetup-x64.*\.exe', re.IGNORECASE))
+                 download_link_tag = win_section
+            else: # آخرین تلاش: پیدا کردن هر لینکی که شبیه لینک دانلود ویندوز باشد
+                download_link_tag = soup.find('a', href=re.compile(r'tsetup-x64.*\.exe', re.IGNORECASE))
 
 
         if download_link_tag and download_link_tag.get('href'):
             href = download_link_tag['href']
-            # Construct full URL if relative
-            if href.startswith('/'):
-                download_url = "https://desktop.telegram.org" + href
-            elif not href.startswith('http'):
-                 download_url = "https://desktop.telegram.org/" + href # Assuming relative to base
-            else:
-                download_url = href
+            download_url = urljoin(base_url, href) # استفاده از urljoin
 
-            # Try to extract version from URL
-            version_match = re.search(r'(\d+\.\d+\.\d+)', download_url)
-            if not version_match and download_link_tag.text: # Try from link text
-                version_match = re.search(r'(\d+\.\d+\.\d+)', download_link_tag.text)
-            if not version_match : # Try from nearby text if main link tag doesn't have it.
-                 parent = download_link_tag.parent
-                 if parent:
-                    version_match = re.search(r'Version (\d+\.\d+\.\d+)', parent.get_text())
-
+            # تلاش برای استخراج نسخه از URL یا متن
+            version_match = re.search(r'(\d+\.\d+\.\d+)', download_url) or \
+                            re.search(r'(\d+\.\d+\.\d+)', download_link_tag.text) or \
+                            re.search(r'Version\s*(\d+\.\d+\.\d+)', download_link_tag.parent.get_text())
 
             if version_match:
                 current_version = version_match.group(1)
                 print(f"Found Windows version: {current_version}, URL: {download_url}")
-
                 last_known = get_last_known_version("desktop")
                 print(f"Last known Windows version: {last_known}")
 
-                # Simple version comparison (can be improved with packaging.version)
-                if current_version != last_known: # A more robust check would parse versions
+                if compare_versions(current_version, last_known):
                     set_github_output("new_version_available", "true")
                     set_github_output("version", current_version)
                     set_github_output("download_url", download_url)
@@ -80,7 +81,7 @@ def check_desktop_windows():
                 else:
                     print("No new Windows version found.")
             else:
-                print("Could not extract Windows version number from link or text.")
+                print("Could not extract Windows version number.")
         else:
             print("Could not find a suitable download link for Telegram Desktop (Windows x64). Website structure might have changed.")
 
@@ -91,63 +92,58 @@ def check_desktop_windows():
 
     set_github_output("new_version_available", "false")
 
-
 def check_android():
-    # Telegram's official site usually links to Google Play.
-    # A common, often updated direct source for APKs is the official Telegram channel,
-    # or their dedicated APK download page if available and stable.
-    # Let's try to find a direct APK download page or rely on a pattern often seen.
-    # Alternative: https://telegram.org/dl/android/apk (sometimes this is a direct link)
-
-    # Strategy 1: Telegram's APK download page (if it exists and is consistent)
-    # url = "https://telegram.org/android/apk" # This URL might not always be up-to-date or may redirect
-    # Strategy 2: Telegram's general Android page and look for APK links
-    url = "https://telegram.org/android"
-    direct_apk_url_pattern = r"https?://telegram.org/dl/android/apk[^\s'\"]*|https?://t.me/TAndroidAPK[^\s'\"]*" # General patterns
-    version_pattern_in_url = r'(\d+\.\d+(\.\d+)*(-\d+)*)' # More flexible version matching
+    """نسخه اندروید را بررسی می‌کند."""
+    base_url = "https://telegram.org/"
+    android_url = urljoin(base_url, "/android")
+    apk_url_pattern = r"/dl/android/apk" # الگوی اصلی لینک APK
+    version_pattern = r'(\d+\.\d+(\.\d+)*)' # الگوی نسخه
 
     try:
-        print(f"Fetching URL: {url}")
-        response = requests.get(url, timeout=20, headers={'User-Agent': 'Mozilla/5.0'})
+        print(f"Fetching URL: {android_url}")
+        response = requests.get(android_url, timeout=30, headers={'User-Agent': 'Mozilla/5.0'})
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
 
         apk_download_url = None
         version = None
 
-        # Try to find a link matching the direct APK URL pattern
-        apk_link_tag = soup.find('a', href=re.compile(direct_apk_url_pattern, re.IGNORECASE))
+        # تلاش برای پیدا کردن لینکی که به صفحه دانلود APK می‌رود یا مستقیماً APK است
+        apk_link_tag = soup.find('a', href=re.compile(apk_url_pattern, re.IGNORECASE))
 
         if apk_link_tag and apk_link_tag.get('href'):
-            apk_download_url = apk_link_tag['href']
-            # Try to extract version from the URL itself
-            version_match = re.search(version_pattern_in_url, apk_download_url)
-            if version_match:
-                version = version_match.group(1)
-            elif apk_link_tag.text: # Try from link text
-                version_match = re.search(version_pattern_in_url, apk_link_tag.text)
-                if version_match:
-                    version = version_match.group(1)
-            # If version not in URL or link text, try nearby elements (more fragile)
-            if not version:
-                parent_text = apk_link_tag.parent.get_text(separator=' ', strip=True) if apk_link_tag.parent else ""
-                version_match = re.search(r'Version\s*(\d+\.\d+(\.\d+)*)', parent_text, re.IGNORECASE)
-                if version_match:
-                    version = version_match.group(1)
+            # اگر لینک پیدا شد، باید به آن صفحه برویم یا اگر مستقیم است، آن را بگیریم
+            # در بسیاری از موارد، لینک اصلی در صفحه اصلی اندروید نیست،
+            # بلکه در بخش توضیحات یا لینکی مثل "Download Telegram APK" است.
+            # بیایید متن لینک را بررسی کنیم.
+            apk_text_link = soup.find('a', string=re.compile(r'Telegram\s+for\s+Android\s+APK', re.IGNORECASE))
+            if not apk_link_tag and apk_text_link:
+                 apk_link_tag = apk_text_link
 
+            # اگر هنوز پیدا نشده، به دنبال لینکی بگردیم که نسخه در آن باشد
+            if not apk_link_tag:
+                apk_link_tag = soup.find('a', href=re.compile(apk_url_pattern, re.IGNORECASE), string=re.compile(version_pattern))
 
-        # Fallback: If no direct link, sometimes the version is mentioned near a Play Store link.
-        # This is less ideal as we need a direct APK link.
-        # For now, we focus on direct APK links.
-        # If direct download is not found, a more complex strategy would be needed,
-        # possibly checking official Telegram channels or reputable APK sites (with caution).
+            if apk_link_tag:
+                 apk_download_url = urljoin(base_url, apk_link_tag['href'])
+                 # تلاش برای استخراج نسخه از متن یا لینک
+                 version_match = re.search(version_pattern, apk_link_tag.text) or \
+                                 re.search(version_pattern, apk_download_url)
 
+                 if version_match:
+                     version = version_match.group(1)
+
+        # اگر هیچ لینکی پیدا نشد، این روش شکست خورده است
         if apk_download_url and version:
+            # مهم: لینک پیدا شده ممکن است مستقیم نباشد و نیاز به follow داشته باشد.
+            # فعلاً فرض می‌کنیم مستقیم است یا curl -L آن را دنبال می‌کند.
+            # برای اطمینان، می‌توانیم لینک را با requests دنبال کنیم تا به URL نهایی برسیم.
+            # فعلا با همین URL ادامه می‌دهیم.
             print(f"Found Android version: {version}, URL: {apk_download_url}")
             last_known = get_last_known_version("android")
             print(f"Last known Android version: {last_known}")
 
-            if version != last_known: # A more robust check would parse versions
+            if compare_versions(version, last_known):
                 set_github_output("new_version_available", "true")
                 set_github_output("version", version)
                 set_github_output("download_url", apk_download_url)
@@ -156,12 +152,7 @@ def check_android():
             else:
                 print("No new Android version found.")
         else:
-            if not apk_download_url:
-                print("Could not find a suitable direct download link for Telegram Android APK.")
-            if not version:
-                print("Could not extract Android version number.")
-            print("Website structure for Android APK might have changed or direct link not easily identifiable.")
-
+            print("Could not find a suitable direct download link or version for Telegram Android APK. Website structure might have changed.")
 
     except requests.exceptions.RequestException as e:
         print(f"Error fetching Telegram Android page: {e}")
@@ -172,6 +163,10 @@ def check_android():
 
 
 if __name__ == "__main__":
+    # اگر فایل خروجی محلی وجود دارد، آن را پاک می‌کنیم تا هر اجرا جدید باشد
+    if os.path.exists('local_output.txt'):
+        os.remove('local_output.txt')
+
     if len(sys.argv) > 1:
         platform_to_check = sys.argv[1]
         if platform_to_check == "windows":
@@ -182,5 +177,6 @@ if __name__ == "__main__":
             print(f"Unknown platform: {platform_to_check}")
             set_github_output("new_version_available", "false")
     else:
-        print("No platform specified (windows or android).")
-        set_github_output("new_version_available", "false")
+        print("No platform specified (windows or android). Checking both.")
+        check_desktop_windows()
+        check_android() # یا می‌توانید خطا بدهید یا هر دو را چک کنید

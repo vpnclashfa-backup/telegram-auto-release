@@ -21,7 +21,7 @@ jobs:
           python-version: '3.x'
 
       - name: Install Python dependencies
-        run: pip install requests beautifulsoup4
+        run: pip install requests beautifulsoup4 packaging # کتابخانه packaging اضافه شد
 
       - name: Get Current Date
         id: date
@@ -41,27 +41,36 @@ jobs:
         if: steps.check_telegram_desktop.outputs.new_version_available == 'true'
         id: download_desktop
         run: |
-          VERSION=$(echo "${{ steps.check_telegram_desktop.outputs.version }}" | sed 's/[^0-9.]//g') # پاکسازی احتمالی نام نسخه
+          VERSION="${{ steps.check_telegram_desktop.outputs.version }}" # دستور sed حذف شد
           DOWNLOAD_URL="${{ steps.check_telegram_desktop.outputs.download_url }}"
           FILE_NAME="Telegram_Desktop_v${VERSION}_${{ steps.date.outputs.TODAY }}.exe"
           echo "Downloading Telegram Desktop $VERSION from $DOWNLOAD_URL..."
           curl -L -o "$FILE_NAME" "$DOWNLOAD_URL"
           echo "FILE_PATH=$(pwd)/$FILE_NAME" >> $GITHUB_OUTPUT
-          echo "RELEASE_TAG=telegram-desktop-v${VERSION}-${{ steps.date.outputs.TODAY }}" >> $GITHUB_OUTPUT
+          echo "RELEASE_TAG=telegram-desktop-v${VERSION}" >> $GITHUB_OUTPUT # تاریخ از تگ حذف شد تا از تکرار جلوگیری شود (اختیاری)
           echo "RELEASE_TITLE=Telegram Desktop v${VERSION} (${{ steps.date.outputs.TODAY }})" >> $GITHUB_OUTPUT
           echo "FILE_NAME_ASSET=$FILE_NAME" >> $GITHUB_OUTPUT
 
       - name: Create Release and Upload Telegram Desktop (Windows)
-        if: steps.check_telegram_desktop.outputs.new_version_available == 'true' && steps.download_desktop.outputs.FILE_PATH
+        # شرط ساده‌تر شد و بررسی وجود تگ اضافه شد (اختیاری)
+        if: steps.download_desktop.outputs.FILE_PATH
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ steps.download_desktop.outputs.RELEASE_TAG }}" \
-            "${{ steps.download_desktop.outputs.FILE_PATH }}" \
-            --title "${{ steps.download_desktop.outputs.RELEASE_TITLE }}" \
-            --notes "Latest Telegram Desktop (Windows x64) version. Automatic check on ${{ steps.date.outputs.TODAY }}."
-          echo "Telegram Desktop v${{ steps.check_telegram_desktop.outputs.version }} uploaded to release ${{ steps.download_desktop.outputs.RELEASE_TAG }}"
-          echo "${{ steps.check_telegram_desktop.outputs.version }}" > last_known_telegram_desktop_version.txt # ذخیره نسخه جدید
+          TAG_NAME="${{ steps.download_desktop.outputs.RELEASE_TAG }}"
+          # بررسی اینکه آیا ریلیز با این تگ قبلاً وجود دارد یا نه
+          if ! gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            gh release create "$TAG_NAME" \
+              "${{ steps.download_desktop.outputs.FILE_PATH }}" \
+              --title "${{ steps.download_desktop.outputs.RELEASE_TITLE }}" \
+              --notes "Latest Telegram Desktop (Windows x64) version. Automatic check on ${{ steps.date.outputs.TODAY }}."
+            echo "Telegram Desktop v${{ steps.check_telegram_desktop.outputs.version }} uploaded to release $TAG_NAME"
+            echo "${{ steps.check_telegram_desktop.outputs.version }}" > last_known_telegram_desktop_version.txt # ذخیره نسخه جدید
+          else
+            echo "Release $TAG_NAME already exists. Skipping upload."
+            # اگر ریلیز وجود دارد، فقط فایل نسخه را آپدیت می‌کنیم
+            echo "${{ steps.check_telegram_desktop.outputs.version }}" > last_known_telegram_desktop_version.txt
+          fi
 
       - name: Check for Telegram Android Update
         id: check_telegram_android
@@ -72,29 +81,37 @@ jobs:
         if: steps.check_telegram_android.outputs.new_version_available == 'true'
         id: download_android
         run: |
-          VERSION=$(echo "${{ steps.check_telegram_android.outputs.version }}" | sed 's/[^0-9.]//g') # پاکسازی احتمالی نام نسخه
+          VERSION="${{ steps.check_telegram_android.outputs.version }}" # دستور sed حذف شد
           DOWNLOAD_URL="${{ steps.check_telegram_android.outputs.download_url }}"
           FILE_NAME="Telegram_Android_v${VERSION}_${{ steps.date.outputs.TODAY }}.apk"
           echo "Downloading Telegram Android $VERSION from $DOWNLOAD_URL..."
           curl -L -o "$FILE_NAME" "$DOWNLOAD_URL"
           echo "FILE_PATH=$(pwd)/$FILE_NAME" >> $GITHUB_OUTPUT
-          echo "RELEASE_TAG=telegram-android-v${VERSION}-${{ steps.date.outputs.TODAY }}" >> $GITHUB_OUTPUT
+          echo "RELEASE_TAG=telegram-android-v${VERSION}" >> $GITHUB_OUTPUT # تاریخ از تگ حذف شد
           echo "RELEASE_TITLE=Telegram Android v${VERSION} (${{ steps.date.outputs.TODAY }})" >> $GITHUB_OUTPUT
           echo "FILE_NAME_ASSET=$FILE_NAME" >> $GITHUB_OUTPUT
 
       - name: Create Release and Upload Telegram Android
-        if: steps.check_telegram_android.outputs.new_version_available == 'true' && steps.download_android.outputs.FILE_PATH
+        # شرط ساده‌تر شد و بررسی وجود تگ اضافه شد
+        if: steps.download_android.outputs.FILE_PATH
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ steps.download_android.outputs.RELEASE_TAG }}" \
-            "${{ steps.download_android.outputs.FILE_PATH }}" \
-            --title "${{ steps.download_android.outputs.RELEASE_TITLE }}" \
-            --notes "Latest Telegram Android APK. Automatic check on ${{ steps.date.outputs.TODAY }}."
-          echo "Telegram Android v${{ steps.check_telegram_android.outputs.version }} uploaded to release ${{ steps.download_android.outputs.RELEASE_TAG }}"
-          echo "${{ steps.check_telegram_android.outputs.version }}" > last_known_telegram_android_version.txt # ذخیره نسخه جدید
+          TAG_NAME="${{ steps.download_android.outputs.RELEASE_TAG }}"
+          if ! gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            gh release create "$TAG_NAME" \
+              "${{ steps.download_android.outputs.FILE_PATH }}" \
+              --title "${{ steps.download_android.outputs.RELEASE_TITLE }}" \
+              --notes "Latest Telegram Android APK. Automatic check on ${{ steps.date.outputs.TODAY }}."
+            echo "Telegram Android v${{ steps.check_telegram_android.outputs.version }} uploaded to release $TAG_NAME"
+            echo "${{ steps.check_telegram_android.outputs.version }}" > last_known_telegram_android_version.txt # ذخیره نسخه جدید
+          else
+            echo "Release $TAG_NAME already exists. Skipping upload."
+            echo "${{ steps.check_telegram_android.outputs.version }}" > last_known_telegram_android_version.txt
+          fi
 
       - name: Commit version tracking files
+        # شرط بدون تغییر باقی می‌ماند تا در صورت وجود ریلیز هم کامیت انجام شود
         if: steps.check_telegram_desktop.outputs.new_version_available == 'true' || steps.check_telegram_android.outputs.new_version_available == 'true'
         run: |
           git config --global user.name 'GitHub Action Bot'
