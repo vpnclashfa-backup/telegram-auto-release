@@ -4,29 +4,35 @@ import re
 import json
 import os
 from packaging.version import parse, InvalidVersion
-from urllib.parse import urlparse, unquote
+from urllib.parse import urljoin, urlparse, unquote
 import logging
 
 # --- پیکربندی اولیه ---
 URL_FILE = "urls_to_check.txt"
 TRACKING_FILE = "versions_tracker.json"
 OUTPUT_JSON_FILE = "updates_found.json"
+GITHUB_OUTPUT_FILE = os.environ.get('GITHUB_OUTPUT', 'local_github_output.txt') # برای خروجی تعداد
 
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 
 # --- توابع کمکی ---
 
 def load_tracker():
+    """فایل ردیابی نسخه ها را بارگذاری می کند."""
     if os.path.exists(TRACKING_FILE):
         try:
             with open(TRACKING_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                data = json.load(f)
+                logging.info(f"فایل ردیابی {TRACKING_FILE} با موفقیت بارگذاری شد.")
+                return data
         except json.JSONDecodeError:
-            logging.warning(f"{TRACKING_FILE} خراب است یا فرمت JSON ندارد. با یک ردیاب خالی شروع می شود.")
+            logging.warning(f"{TRACKING_FILE} خراب است. با ردیاب خالی شروع می شود.")
             return {}
+    logging.info(f"فایل ردیابی {TRACKING_FILE} یافت نشد. با ردیاب خالی شروع می شود.")
     return {}
 
 def compare_versions(current_v_str, last_v_str):
+    """نسخه فعلی را با آخرین نسخه شناخته شده مقایسه می کند."""
     logging.info(f"مقایسه نسخه ها: فعلی='{current_v_str}', قبلی='{last_v_str}'")
     try:
         if not current_v_str:
@@ -37,9 +43,16 @@ def compare_versions(current_v_str, last_v_str):
             logging.info("نسخه قبلی یافت نشد یا 0.0.0 بود، نسخه فعلی جدید است.")
             return True
 
-        normalize_for_parse = lambda v: re.split(r'[^0-9.]', v, 1)[0]
-        parsed_current = parse(normalize_for_parse(current_v_str))
-        parsed_last = parse(normalize_for_parse(last_v_str))
+        normalize_for_parse = lambda v: re.split(r'[^0-9.]', v, 1)[0].strip('.')
+        
+        current_norm = normalize_for_parse(current_v_str)
+        last_norm = normalize_for_parse(last_v_str)
+
+        if not current_norm: logging.warning(f"نسخه فعلی '{current_v_str}' پس از نرمال سازی نامعتبر شد."); return False
+        if not last_norm: logging.warning(f"نسخه قبلی '{last_v_str}' پس از نرمال سازی نامعتبر شد."); return True
+
+        parsed_current = parse(current_norm)
+        parsed_last = parse(last_norm)
         is_newer = parsed_current > parsed_last
         logging.info(f"نتیجه مقایسه (تجزیه شده): فعلی='{parsed_current}', قبلی='{parsed_last}', جدیدتر: {is_newer}")
         return is_newer
@@ -51,9 +64,11 @@ def compare_versions(current_v_str, last_v_str):
         return current_v_str != last_v_str
 
 def sanitize_text(text, for_filename=False):
+    """متن را پاکسازی می کند."""
+    if not text: return ""
     text = text.strip().lower()
-    text = re.sub(r'\((farsroid\.com|.*?)\)', '', text, flags=re.IGNORECASE)
-    text = text.strip()
+    text = re.sub(r'\((farsroid\.com|.*?)\)', '', text, flags=re.IGNORECASE).strip()
+    text = re.sub(r'[\(\)]', '', text) # حذف پرانتز
     if for_filename:
         text = re.sub(r'[<>:"/\\|?*]', '_', text)
         text = re.sub(r'\s+', '_', text)
@@ -62,6 +77,13 @@ def sanitize_text(text, for_filename=False):
     return text
 
 def extract_app_name_from_page(soup, page_url):
+    """تلاش برای استخراج نام برنامه از صفحه."""
+    h1_tag = soup.find('h1', class_=re.compile(r'title', re.IGNORECASE))
+    if h1_tag:
+        title_text = h1_tag.text.strip()
+        match = re.match(r'^(?:دانلود\s+)?(.+?)(?:\s+\d+\.\d+.*|\s+–\s+.*|$)', title_text, re.IGNORECASE)
+        if match and match.group(1): return match.group(1).strip()
+
     title_tag = soup.find('title')
     if title_tag:
         title_text = title_tag.text.strip()
@@ -71,54 +93,52 @@ def extract_app_name_from_page(soup, page_url):
             app_name = re.sub(r'\s+(?:اندروید|آیفون|ios|android)$', '', app_name, flags=re.IGNORECASE).strip()
             if app_name: return app_name
 
-    article_title_h1 = soup.find('h1', class_=re.compile(r'title|post-title|entry-title', re.IGNORECASE))
-    if article_title_h1:
-        return article_title_h1.text.strip()
-
     parsed_url = urlparse(page_url)
     path_parts = [part for part in parsed_url.path.split('/') if part]
     if path_parts:
         guessed_name = path_parts[-1].replace('-', ' ').replace('_', ' ')
-        guessed_name = re.sub(r'\.(html|php|asp|aspx)$', '', guessed_name, flags=re.IGNORECASE)
         return guessed_name.title()
     return "UnknownApp"
 
+# --- منطق خراش دادن خاص سایت فارسروید (با لاگ‌گیری بیشتر) ---
 def scrape_farsroid_page(page_url, soup, tracker_data):
+    """اطلاعات دانلود را از یک صفحه فارسروید خراش می دهد."""
     updates_found_on_page = []
     page_app_name = extract_app_name_from_page(soup, page_url)
-    logging.info(f"پردازش صفحه فارسروید: {page_url} (نام برنامه شناسایی شده: {page_app_name})")
+    logging.info(f"پردازش صفحه فارسروید: {page_url} (نام برنامه: {page_app_name})")
 
     download_box = soup.find('section', class_='downloadbox')
     if not download_box:
         logging.warning(f"باکس دانلود در {page_url} پیدا نشد.")
         return updates_found_on_page
+    logging.info("باکس دانلود پیدا شد.")
 
-    download_links_ul = download_box.find('ul', class_='download-links')
-    if not download_links_ul:
-        logging.warning(f"لیست لینک های دانلود (ul) در {page_url} پیدا نشد.")
-        return updates_found_on_page
+    all_links_in_box = download_box.find_all('a', href=True)
+    logging.info(f"تعداد {len(all_links_in_box)} لینک در باکس دانلود پیدا شد.")
 
-    for li in download_links_ul.find_all('li', class_='download-link'):
-        link_tag = li.find('a', class_='download-btn')
-        if not link_tag: continue
-
-        download_url = link_tag.get('href')
-        link_text_span = link_tag.find('span', class_='txt')
-        link_text = link_text_span.text.strip() if link_text_span else ""
-
-        if not download_url or not link_text:
-            logging.warning(f"لینک دانلود یا متن لینک در {page_url} ناقص است. رد شدن...")
+    processed_links = 0
+    for link_tag in all_links_in_box:
+        # فقط لینک هایی که کلاس 'download-btn' دارند را پردازش کن
+        if 'download-btn' not in link_tag.get('class', []):
             continue
 
-        version_match_url = re.search(r'(\d+\.\d+(?:\.\d+){0,2}(?:[.-][a-zA-Z0-9]+)*)', download_url)
-        version_match_text = re.search(r'(\d+\.\d+(?:\.\d+){0,2}(?:[.-][a-zA-Z0-9]+)*)', link_text)
-        current_version = None
-        if version_match_url: current_version = version_match_url.group(1)
-        elif version_match_text: current_version = version_match_text.group(1)
+        processed_links += 1
+        logging.info(f"--- پردازش لینک دانلود شماره {processed_links} ---")
+
+        download_url = urljoin(page_url, link_tag.get('href')) # استفاده از urljoin
+        link_text_span = link_tag.find('span', class_='txt')
+        link_text = link_text_span.text.strip() if link_text_span else "متن لینک یافت نشد"
+
+        logging.info(f"  URL خام: {download_url}")
+        logging.info(f"  متن خام: {link_text}")
+
+        version_match = re.search(r'(\d+\.\d+(?:\.\d+){0,2}(?:[.-][a-zA-Z0-9]+)*)', download_url)
+        current_version = version_match.group(1) if version_match else None
 
         if not current_version:
-            logging.warning(f"نسخه از URL '{download_url}' یا متن '{link_text}' استخراج نشد.")
+            logging.warning(f"نسخه از URL '{download_url}' استخراج نشد. رد شدن...")
             continue
+        logging.info(f"  نسخه استخراج شده: {current_version}")
 
         variant = "Universal"
         filename_in_url = unquote(urlparse(download_url).path.split('/')[-1])
@@ -127,17 +147,16 @@ def scrape_farsroid_page(page_url, soup, tracker_data):
         elif re.search(r'x86_64', filename_in_url + link_text, re.IGNORECASE): variant = "x86_64"
         elif re.search(r'x86', filename_in_url + link_text, re.IGNORECASE): variant = "x86"
         elif re.search(r'Universal', filename_in_url + link_text, re.IGNORECASE): variant = "Universal"
+        logging.info(f"  نوع استخراج شده: {variant}")
 
-        app_name_for_file = sanitize_text(page_app_name, for_filename=True)
-        variant_for_file = sanitize_text(variant, for_filename=True)
+
         tracking_id = f"{sanitize_text(page_app_name)}_{sanitize_text(variant)}".lower()
         last_known_version = tracker_data.get(tracking_id, "0.0.0")
 
-        logging.info(f"  جزئیات یافت شده: برنامه='{page_app_name}', نسخه='{current_version}', نوع='{variant}', URL='{download_url}'")
-        logging.info(f"    شناسه ردیابی='{tracking_id}', نسخه قبلی='{last_known_version}'")
-
         if compare_versions(current_version, last_known_version):
             logging.info(f"    => آپدیت جدید برای {tracking_id}: {current_version} (قبلی: {last_known_version})")
+            app_name_for_file = sanitize_text(page_app_name, for_filename=True)
+            variant_for_file = sanitize_text(variant, for_filename=True)
             suggested_filename = f"{app_name_for_file}_v{current_version}_{variant_for_file}.apk"
             updates_found_on_page.append({
                 "app_name": page_app_name,
@@ -150,31 +169,30 @@ def scrape_farsroid_page(page_url, soup, tracker_data):
                 "current_version_for_tracking": current_version
             })
         else:
-            logging.info(f"    => {tracking_id} به‌روز است (نسخه: {current_version}).")
+            logging.info(f"    => {tracking_id} به‌روز است.")
+
+    if processed_links == 0:
+        logging.warning("هیچ لینک دانلود معتبری (با کلاس 'download-btn') در باکس دانلود پیدا نشد.")
+
     return updates_found_on_page
 
 # --- منطق اصلی ---
 def main():
     if not os.path.exists(URL_FILE):
         logging.error(f"فایل URL ها یافت نشد: {URL_FILE}")
-        with open(OUTPUT_JSON_FILE, 'w', encoding='utf-8') as f:
-            json.dump([], f)
-        # تنظیم خروجی تعداد آپدیت ها برای GitHub Actions
+        with open(OUTPUT_JSON_FILE, 'w', encoding='utf-8') as f: json.dump([], f)
         if 'GITHUB_OUTPUT' in os.environ:
-            with open(os.environ['GITHUB_OUTPUT'], 'a') as gh_output:
-                gh_output.write(f"updates_count=0\n")
+            with open(GITHUB_OUTPUT_FILE, 'a') as gh_output: gh_output.write(f"updates_count=0\n")
         sys.exit(1)
 
     with open(URL_FILE, 'r', encoding='utf-8') as f:
         urls_to_process = [line.strip() for line in f if line.strip() and not line.startswith('#')]
 
     if not urls_to_process:
-        logging.info("فایل URL ها خالی است یا هیچ URL معتبری ندارد.")
-        with open(OUTPUT_JSON_FILE, 'w', encoding='utf-8') as f:
-            json.dump([], f)
+        logging.info("فایل URL ها خالی است.")
+        with open(OUTPUT_JSON_FILE, 'w', encoding='utf-8') as f: json.dump([], f)
         if 'GITHUB_OUTPUT' in os.environ:
-            with open(os.environ['GITHUB_OUTPUT'], 'a') as gh_output:
-                gh_output.write(f"updates_count=0\n")
+            with open(GITHUB_OUTPUT_FILE, 'a') as gh_output: gh_output.write(f"updates_count=0\n")
         return
 
     tracker_data = load_tracker()
@@ -196,28 +214,20 @@ def main():
                 updates_on_page = scrape_farsroid_page(page_url, soup, tracker_data)
                 all_updates_found.extend(updates_on_page)
             else:
-                logging.warning(f"هیچ خراش دهنده مشخصی برای URL پیدا نشد: {page_url}. رد شدن...")
-        except requests.exceptions.Timeout:
-            logging.error(f"خطای Timeout هنگام دریافت {page_url}.")
-        except requests.exceptions.RequestException as e:
-            logging.error(f"خطا در دریافت {page_url}: {e}")
+                logging.warning(f"خراش دهنده برای {page_url} پیاده سازی نشده است.")
         except Exception as e:
-            logging.error(f"خطای پیش بینی نشده هنگام پردازش {page_url}: {e}", exc_info=True)
+            logging.error(f"خطا هنگام پردازش {page_url}: {e}", exc_info=True)
         logging.info(f"--- پایان بررسی URL: {page_url} ---")
 
     with open(OUTPUT_JSON_FILE, 'w', encoding='utf-8') as f:
         json.dump(all_updates_found, f, ensure_ascii=False, indent=2)
 
-    # تنظیم خروجی تعداد آپدیت ها برای GitHub Actions
     num_updates = len(all_updates_found)
     if 'GITHUB_OUTPUT' in os.environ:
-        with open(os.environ['GITHUB_OUTPUT'], 'a') as gh_output:
+        with open(GITHUB_OUTPUT_FILE, 'a') as gh_output:
             gh_output.write(f"updates_count={num_updates}\n")
 
-    if all_updates_found:
-        logging.info(f"\nخلاصه: {num_updates} آپدیت پیدا شد. جزئیات در {OUTPUT_JSON_FILE}")
-    else:
-        logging.info(f"\nخلاصه: هیچ آپدیت جدیدی پیدا نشد. فایل {OUTPUT_JSON_FILE} خالی است یا شامل لیست خالی [].")
+    logging.info(f"\nخلاصه: {num_updates} آپدیت پیدا شد. جزئیات در {OUTPUT_JSON_FILE}")
 
 if __name__ == "__main__":
     main()
