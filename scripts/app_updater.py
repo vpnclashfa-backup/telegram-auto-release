@@ -57,7 +57,7 @@ def compare_versions(current_v_str, last_v_str):
         logging.info(f"نتیجه مقایسه (تجزیه شده): فعلی='{parsed_current}', قبلی='{parsed_last}', جدیدتر: {is_newer}")
         return is_newer
     except InvalidVersion as e:
-        logging.warning(f"خطای InvalidVersion هنگام مقایسه: {e}. مقایسه به صورت رشته ای انجام می شود.")
+        logging.warning(f"خطای InvalidVersion هنگام مقایسه '{current_v_str}' با '{last_v_str}': {e}. مقایسه به صورت رشته ای انجام می شود.")
         return current_v_str != last_v_str
     except Exception as e:
         logging.error(f"خطای پیش بینی نشده هنگام مقایسه نسخه ها: {e}. مقایسه به صورت رشته ای انجام می شود.")
@@ -78,25 +78,28 @@ def sanitize_text(text, for_filename=False):
 
 def extract_app_name_from_page(soup, page_url):
     """تلاش برای استخراج نام برنامه از صفحه."""
-    # تلاش برای تگ H1 با کلاس title
+    # تلاش برای تگ H1 با کلاس title (معمولا عنوان اصلی پست)
     h1_tag = soup.find('h1', class_=re.compile(r'title', re.IGNORECASE))
     if h1_tag:
         title_text = h1_tag.text.strip()
-        # **خطای احتمالی اینجا بود، regex را با دقت بررسی می کنیم**
+        # حذف "دانلود " از ابتدا و هر چیزی بعد از شماره نسخه یا " – "
         match = re.match(r'^(?:دانلود\s+)?(.+?)(?:\s+\d+\.\d+.*|\s+–\s+.*|$)', title_text, re.IGNORECASE)
-        if match and match.group(1): return match.group(1).strip()
+        if match and match.group(1):
+            app_name = match.group(1).strip()
+            # حذف کلمات کلیدی اضافی مانند "اندروید" اگر در انتها باشند
+            app_name = re.sub(r'\s+(?:برنامه|اندروید|مود|آنلاک|پرمیوم|حرفه ای|طلایی)$', '', app_name, flags=re.IGNORECASE).strip()
+            if app_name: return app_name
 
-    # تلاش برای تگ <title>
+    # اگر از H1 پیدا نشد، تگ <title> را امتحان کنید
     title_tag = soup.find('title')
     if title_tag:
         title_text = title_tag.text.strip()
-        # **خطای احتمالی اینجا بود، regex را با دقت بررسی می کنیم**
         match = re.match(r'^(?:دانلود\s+)?(.+?)(?:\s+\d+\.\d+.*|\s+برنامه.*|\s+–\s+.*|$)', title_text, re.IGNORECASE)
         if match and match.group(1):
             app_name = match.group(1).strip()
             app_name = re.sub(r'\s+(?:اندروید|آیفون|ios|android)$', '', app_name, flags=re.IGNORECASE).strip()
             if app_name: return app_name
-
+    
     # راه حل نهایی: استفاده از URL
     parsed_url = urlparse(page_url)
     path_parts = [part for part in parsed_url.path.split('/') if part]
@@ -106,7 +109,7 @@ def extract_app_name_from_page(soup, page_url):
         return guessed_name.title()
     return "UnknownApp"
 
-# --- منطق خراش دادن خاص سایت فارسروید ---
+# --- منطق خراش دادن خاص سایت فارسروید (با لاگ‌گیری بیشتر از محتوای UL) ---
 def scrape_farsroid_page(page_url, soup, tracker_data):
     """اطلاعات دانلود را از یک صفحه فارسروید خراش می دهد."""
     updates_found_on_page = []
@@ -121,15 +124,25 @@ def scrape_farsroid_page(page_url, soup, tracker_data):
 
     download_links_ul = download_box.find('ul', class_='download-links')
     if not download_links_ul:
-        logging.warning(f"لیست لینک های دانلود (ul) در {page_url} پیدا نشد.")
+        logging.warning(f"لیست لینک های دانلود (ul.download-links) در {page_url} پیدا نشد.")
+        # لاگ کردن محتوای باکس دانلود اگر ul پیدا نشد
+        logging.info(f"محتوای HTML باکس دانلود:\n{download_box.prettify()[:2000]}") # نمایش 2000 کاراکتر اول
         return updates_found_on_page
-    logging.info("لیست لینک های دانلود (ul) پیدا شد.")
+    logging.info("لیست لینک های دانلود (ul.download-links) پیدا شد.")
 
     found_lis = download_links_ul.find_all('li', class_='download-link')
     logging.info(f"تعداد {len(found_lis)} آیتم li.download-link پیدا شد.")
 
     if not found_lis:
         logging.warning("هیچ آیتم li.download-link پیدا نشد. شاید ساختار عوض شده؟")
+        # **اضافه شده: لاگ کردن محتوای HTML تگ ul.download-links**
+        logging.info(f"محتوای HTML تگ ul.download-links:\n{download_links_ul.prettify()}")
+        # همچنین، سعی می کنیم هر li داخل ul را پیدا کنیم، صرف نظر از کلاس
+        all_li_in_ul = download_links_ul.find_all('li')
+        logging.info(f"تعداد کل li ها (صرف نظر از کلاس) داخل ul: {len(all_li_in_ul)}")
+        if all_li_in_ul:
+            logging.info("نمونه ای از اولین li پیدا شده (صرف نظر از کلاس):")
+            logging.info(all_li_in_ul[0].prettify())
         return updates_found_on_page
 
     for i, li in enumerate(found_lis):
@@ -137,6 +150,7 @@ def scrape_farsroid_page(page_url, soup, tracker_data):
         link_tag = li.find('a', class_='download-btn')
         if not link_tag:
             logging.warning(f"  تگ a.download-btn در li شماره {i+1} پیدا نشد. رد شدن...")
+            logging.debug(f"محتوای li شماره {i+1}:\n{li.prettify()}") # لاگ محتوای li اگر دکمه پیدا نشد
             continue
 
         download_url = urljoin(page_url, link_tag.get('href'))
@@ -150,11 +164,18 @@ def scrape_farsroid_page(page_url, soup, tracker_data):
         logging.info(f"  URL: {download_url}")
         logging.info(f"  متن: {link_text}")
 
+        # استخراج نسخه از URL (معمولا قابل اعتمادتر است)
         version_match = re.search(r'(\d+\.\d+(?:\.\d+){0,2}(?:[.-][a-zA-Z0-9]+)*)', download_url)
         current_version = version_match.group(1) if version_match else None
+        
+        # اگر در URL نبود، از متن لینک هم امتحان کن
+        if not current_version:
+            version_match_text = re.search(r'(\d+\.\d+(?:\.\d+){0,2}(?:[.-][a-zA-Z0-9]+)*)', link_text)
+            current_version = version_match_text.group(1) if version_match_text else None
+
 
         if not current_version:
-            logging.warning(f"  نسخه از URL '{download_url}' استخراج نشد. رد شدن...")
+            logging.warning(f"  نسخه از URL '{download_url}' یا متن '{link_text}' استخراج نشد. رد شدن...")
             continue
         logging.info(f"  نسخه: {current_version}")
 
@@ -190,7 +211,7 @@ def scrape_farsroid_page(page_url, soup, tracker_data):
 
     return updates_found_on_page
 
-# --- منطق اصلی ---
+# --- منطق اصلی (بدون تغییر) ---
 def main():
     """نقطه ورود اصلی اسکریپت."""
     if not os.path.exists(URL_FILE):
@@ -218,7 +239,7 @@ def main():
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept-Language': 'en-US,en;q=0.9,fa;q=0.8',
+                'Accept-Language': 'fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7', # اولویت با فارسی
                 'Referer': 'https://www.google.com/'
             }
             response = requests.get(page_url, headers=headers, timeout=45)
