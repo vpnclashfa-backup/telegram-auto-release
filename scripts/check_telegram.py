@@ -67,8 +67,8 @@ def check_desktop_windows():
         soup = BeautifulSoup(response.text, 'html.parser')
         print("[LOG] HTML content fetched and parsed successfully.")
 
-        initial_href = soup.find('a', href="//telegram.org/dl/desktop/win64")
-        if initial_href: initial_href = initial_href.get('href')
+        initial_href_tag = soup.find('a', href="//telegram.org/dl/desktop/win64")
+        initial_href = initial_href_tag.get('href') if initial_href_tag else None
 
         if not initial_href:
             print("[LOG] Win_Strategy_1: Not found. Trying Win_Strategy_2...")
@@ -125,17 +125,16 @@ def check_desktop_windows():
     print("[INFO] Finished check for Telegram Desktop (Windows).")
 
 
-# --- تابع بررسی اندروید (بازنویسی شده) ---
+# --- تابع بررسی اندروید (با چک کردن هدر) ---
 
 def check_android():
-    """نسخه اندروید را با دنبال کردن ریدایرکت بررسی می‌کند."""
+    """نسخه اندروید را با دنبال کردن ریدایرکت و چک کردن هدر بررسی می‌کند."""
     print("\n" + "="*50)
-    print("[INFO] Starting check for Telegram Android - New Method...")
+    print("[INFO] Starting check for Telegram Android - Header Check Method...")
     print("="*50)
     base_url = "https://telegram.org/"
-    # این آدرس صفحه‌ای است که کدش را فرستادید (یا نزدیک به آن)
-    android_page_url = urljoin(base_url, "/android") 
-    set_github_output("new_version_available", "false") # پیش‌فرض
+    android_page_url = urljoin(base_url, "/android")
+    set_github_output("new_version_available", "false")
 
     try:
         print(f"[LOG] Fetching Android page URL: {android_page_url}")
@@ -145,49 +144,65 @@ def check_android():
         soup = BeautifulSoup(response.text, 'html.parser')
         print("[LOG] Android HTML content fetched and parsed successfully.")
 
-        initial_href = None
-        # جستجوی لینک با href="/dl/android/apk"
         apk_link_tag = soup.find('a', href="/dl/android/apk")
+        initial_href = apk_link_tag.get('href') if apk_link_tag else None
 
-        if apk_link_tag:
-            initial_href = apk_link_tag.get('href')
-            print(f"[LOG] Found initial APK link href: {initial_href}")
-        else:
+        if not initial_href:
             print("[ERROR] Could not find the '/dl/android/apk' link on the page.")
             print("[INFO] Finished check for Telegram Android (Link not found).")
-            return # نمی‌توانیم ادامه دهیم
+            return
 
-        # --- دنبال کردن ریدایرکت ---
-        initial_url = urljoin(base_url, initial_href) # urljoin برای ساخت URL امن
+        initial_url = urljoin(base_url, initial_href)
         print(f"[LOG] Found Initial Android URL: {initial_url}")
-        print("[LOG] Following Android redirects...")
+        print("[LOG] Following Android redirects (using GET with stream)...")
 
         try:
-            redirect_response = requests.head(initial_url, allow_redirects=True, timeout=45, headers={'User-Agent': 'Mozilla/5.0'})
-            redirect_response.raise_for_status()
-            final_url = redirect_response.url
-            print(f"[LOG] Final Android URL: {final_url}")
+            # از GET با stream=True استفاده می‌کنیم تا بتوانیم هدرها را قبل از دانلود کامل بگیریم
+            response = requests.get(initial_url, allow_redirects=True, timeout=45, headers={'User-Agent': 'Mozilla/5.0'}, stream=True)
+            response.raise_for_status()
+            final_url = response.url
+            print(f"[LOG] Final Redirected URL: {final_url}")
 
-            # === استخراج نسخه از URL نهایی ===
-            # الگوهای ممکن: Telegram-X.Y.Z.apk, X.Y.Z/Telegram.apk ...
-            version_match = re.search(r'[/-](\d+\.\d+(?:\.\d+)?(?:\.\d+)?)[./]', final_url, re.IGNORECASE)
-            if not version_match:
-                 version_match = re.search(r'[.-](\d+\.\d+(?:\.\d+)?(?:\.\d+)?)\.apk', final_url, re.IGNORECASE)
+            version = None
 
-            if version_match:
-                current_version = version_match.group(1)
-                print(f"[SUCCESS] Found Android version from final URL: {current_version}")
+            # === استراتژی ۱: چک کردن هدر Content-Disposition ===
+            content_disposition = response.headers.get('Content-Disposition')
+            print(f"[LOG] Content-Disposition Header: {content_disposition}")
+            if content_disposition:
+                # الگو: filename="Telegram-X.Y.Z.apk"
+                version_match = re.search(r'filename\*?="?Telegram[.-](\d+\.\d+(?:\.\d+)?(?:\.\d+)?)\.apk"?', content_disposition, re.IGNORECASE)
+                if version_match:
+                    version = version_match.group(1)
+                    print(f"[SUCCESS] Found Android version from Content-Disposition: {version}")
+
+            # === استراتژی ۲: چک کردن URL نهایی (بعید است کار کند) ===
+            if not version:
+                print("[LOG] Version not in headers. Checking final URL (Fallback)...")
+                version_match = re.search(r'[/-](\d+\.\d+(?:\.\d+)?(?:\.\d+)?)[./]', final_url, re.IGNORECASE)
+                if not version_match:
+                     version_match = re.search(r'[.-](\d+\.\d+(?:\.\d+)?(?:\.\d+)?)\.apk', final_url, re.IGNORECASE)
+                if version_match:
+                    version = version_match.group(1)
+                    print(f"[SUCCESS] Found Android version from Final URL (Fallback): {version}")
+
+            response.close() # بستن اتصال چون فقط هدرها را می‌خواستیم
+
+            # === پردازش نسخه پیدا شده ===
+            if version:
+                current_version = version
+                actual_download_url = final_url # ما نیاز به URL نهایی برای دانلود داریم
+
                 last_known = get_last_known_version("android")
 
                 if compare_versions(current_version, last_known):
                     print("[INFO] New Android version found! Setting outputs.")
                     set_github_output("new_version_available", "true")
                     set_github_output("version", current_version)
-                    set_github_output("download_url", final_url)
+                    set_github_output("download_url", actual_download_url)
                 else:
                     print("[INFO] Android version is not newer.")
             else:
-                print(f"[ERROR] Could not extract Android version from final URL: {final_url}. Pattern might need update.")
+                print(f"[ERROR] COULD NOT FIND ANDROID VERSION from URL or Headers. Cannot proceed.")
 
         except requests.exceptions.RequestException as e:
             print(f"[FATAL_ERROR] Error following Android redirects: {e}")
@@ -217,7 +232,6 @@ if __name__ == "__main__":
             check_android()
         else:
             print(f"[FATAL_ERROR] Unknown platform: {platform_to_check}")
-            # Ensure outputs are not set for unknown platforms
             set_github_output("new_version_available", "false")
     else:
         print("[INIT] No platform specified. Checking BOTH platforms.")
