@@ -1,4 +1,4 @@
-name: Check and Upload New Telegram Versions
+name: Check and Upload New Telegram Versions (Combined Release)
 
 on:
   schedule:
@@ -32,12 +32,18 @@ jobs:
           touch last_known_telegram_desktop_version.txt
           touch last_known_android_size.txt
 
-      # --- Windows Check & Upload ---
+      # --- Windows Check ---
       - name: Check for Telegram Desktop (Windows) Update
         id: check_telegram_desktop
-        run: python scripts/check_telegram.py windows
+        run: python scripts/check_telegram.py windows # فرض می‌کنیم اسکریپت شما در پوشه scripts قرار دارد
 
-      - name: Download and Prepare Telegram Desktop (Windows)
+      # --- Android Check ---
+      - name: Check for Telegram Android Update
+        id: check_telegram_android
+        run: python scripts/check_telegram.py android # فرض می‌کنیم اسکریپت شما در پوشه scripts قرار دارد
+
+      # --- Windows Download (if new) ---
+      - name: Download Telegram Desktop (Windows)
         if: steps.check_telegram_desktop.outputs.new_version_available == 'true'
         id: download_desktop
         run: |
@@ -47,33 +53,10 @@ jobs:
           echo "Downloading Telegram Desktop $VERSION from $DOWNLOAD_URL..."
           curl -L -o "$FILE_NAME" "$DOWNLOAD_URL"
           echo "FILE_PATH=$(pwd)/$FILE_NAME" >> $GITHUB_OUTPUT
-          echo "RELEASE_TAG=telegram-desktop-v${VERSION}" >> $GITHUB_OUTPUT
-          echo "RELEASE_TITLE=Telegram Desktop v${VERSION} (${{ steps.date.outputs.TODAY }})" >> $GITHUB_OUTPUT
+          echo "FILE_NAME=$FILE_NAME" >> $GITHUB_OUTPUT
 
-      - name: Create Release and Upload Telegram Desktop (Windows)
-        if: steps.download_desktop.outputs.FILE_PATH
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG_NAME="${{ steps.download_desktop.outputs.RELEASE_TAG }}"
-          if ! gh release view "$TAG_NAME" > /dev/null 2>&1; then
-            gh release create "$TAG_NAME" \
-              "${{ steps.download_desktop.outputs.FILE_PATH }}" \
-              --title "${{ steps.download_desktop.outputs.RELEASE_TITLE }}" \
-              --notes "Latest Telegram Desktop (Windows x64) version. Automatic check on ${{ steps.date.outputs.TODAY }}."
-            echo "Telegram Desktop v${{ steps.check_telegram_desktop.outputs.version }} uploaded to release $TAG_NAME"
-            echo "${{ steps.check_telegram_desktop.outputs.version }}" > last_known_telegram_desktop_version.txt
-          else
-            echo "Release $TAG_NAME already exists. Skipping upload."
-            echo "${{ steps.check_telegram_desktop.outputs.version }}" > last_known_telegram_desktop_version.txt
-          fi
-
-      # --- Android Check & Upload ---
-      - name: Check for Telegram Android Update
-        id: check_telegram_android
-        run: python scripts/check_telegram.py android
-
-      - name: Download and Prepare Telegram Android
+      # --- Android Download (if new) ---
+      - name: Download Telegram Android
         if: steps.check_telegram_android.outputs.new_version_available == 'true'
         id: download_android
         run: |
@@ -82,37 +65,76 @@ jobs:
           echo "Downloading new Telegram Android from $DOWNLOAD_URL..."
           curl -L -o "$FILE_NAME" "$DOWNLOAD_URL"
           echo "FILE_PATH=$(pwd)/$FILE_NAME" >> $GITHUB_OUTPUT
-          echo "RELEASE_TAG=telegram-android-${{ steps.date.outputs.TODAY }}" >> $GITHUB_OUTPUT
-          echo "RELEASE_TITLE=Telegram Android (${{ steps.date.outputs.TODAY }})" >> $GITHUB_OUTPUT
+          echo "FILE_NAME=$FILE_NAME" >> $GITHUB_OUTPUT
 
-      - name: Create Release and Upload Telegram Android
-        if: steps.download_android.outputs.FILE_PATH
+      # --- Create Release (if any is new and release doesn't exist) ---
+      - name: Create Combined Release
+        if: steps.check_telegram_desktop.outputs.new_version_available == 'true' || steps.check_telegram_android.outputs.new_version_available == 'true'
+        id: create_release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG_NAME="${{ steps.download_android.outputs.RELEASE_TAG }}"
-          if ! gh release view "$TAG_NAME" > /dev/null 2>&1; then
-            gh release create "$TAG_NAME" \
-              "${{ steps.download_android.outputs.FILE_PATH }}" \
-              --title "${{ steps.download_android.outputs.RELEASE_TITLE }}" \
-              --notes "Latest Telegram Android APK (checked by size). Automatic check on ${{ steps.date.outputs.TODAY }}."
-            echo "New Telegram Android uploaded to release $TAG_NAME"
-            echo "${{ steps.check_telegram_android.outputs.current_size }}" > last_known_android_size.txt
-          else
-            echo "Release $TAG_NAME already exists. Skipping upload."
-            echo "${{ steps.check_telegram_android.outputs.current_size }}" > last_known_android_size.txt
+          TAG_NAME="telegram-updates-${{ steps.date.outputs.TODAY }}"
+          RELEASE_TITLE="Telegram Updates (${{ steps.date.outputs.TODAY }})"
+          NOTES="Automatic check on ${{ steps.date.outputs.TODAY }}.\n"
+          WIN_VER="${{ steps.check_telegram_desktop.outputs.version }}"
+          WIN_NEW="${{ steps.check_telegram_desktop.outputs.new_version_available }}"
+          AND_NEW="${{ steps.check_telegram_android.outputs.new_version_available }}"
+
+          if [[ "$WIN_NEW" == "true" ]]; then
+            NOTES="${NOTES}\n- Windows Desktop v${WIN_VER}"
+          fi
+          if [[ "$AND_NEW" == "true" ]]; then
+            NOTES="${NOTES}\n- Android APK (Size: ${{ steps.check_telegram_android.outputs.current_size }} bytes)"
           fi
 
-      # --- Commit Tracking Files ---
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_OUTPUT # Make tag available to next steps
+
+          # Create release only if it doesn't exist yet
+          if ! gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            echo "Creating new release $TAG_NAME..."
+            gh release create "$TAG_NAME" \
+              --title "$RELEASE_TITLE" \
+              --notes "$NOTES"
+          else
+            echo "Release $TAG_NAME already exists. Will upload assets to it."
+            # Optionally, you could edit the existing release notes here if needed.
+          fi
+
+      # --- Upload Windows (if new) ---
+      - name: Upload Telegram Desktop (Windows)
+        if: steps.check_telegram_desktop.outputs.new_version_available == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ steps.create_release.outputs.TAG_NAME }}"
+          FILE_PATH="${{ steps.download_desktop.outputs.FILE_PATH }}"
+          echo "Uploading $FILE_PATH to release $TAG_NAME..."
+          gh release upload "$TAG_NAME" "$FILE_PATH" --clobber
+          echo "Updating last known Windows version..."
+          echo "${{ steps.check_telegram_desktop.outputs.version }}" > last_known_telegram_desktop_version.txt
+
+      # --- Upload Android (if new) ---
+      - name: Upload Telegram Android
+        if: steps.check_telegram_android.outputs.new_version_available == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ steps.create_release.outputs.TAG_NAME }}"
+          FILE_PATH="${{ steps.download_android.outputs.FILE_PATH }}"
+          echo "Uploading $FILE_PATH to release $TAG_NAME..."
+          gh release upload "$TAG_NAME" "$FILE_PATH" --clobber
+          echo "Updating last known Android size..."
+          echo "${{ steps.check_telegram_android.outputs.current_size }}" > last_known_android_size.txt
+
+      # --- Commit Tracking Files (if any was new) ---
       - name: Commit version/size tracking files
-        # این شرط را کمی تغییر می‌دهیم تا مطمئن شویم فقط وقتی چیزی آپلود شده یا فایل تغییر کرده کامیت می‌شود
-        # برای سادگی، فعلاً هر وقت نسخه‌ی جدیدی پیدا شود کامیت می‌کنیم
         if: steps.check_telegram_desktop.outputs.new_version_available == 'true' || steps.check_telegram_android.outputs.new_version_available == 'true'
         run: |
           git config --global user.name 'GitHub Action Bot'
           git config --global user.email 'actions@github.com'
           git add last_known_telegram_desktop_version.txt last_known_android_size.txt
-          # فقط اگر تغییری وجود داشته باشد کامیت و پوش کن
+          # Only commit and push if there are actual changes
           if ! git diff --staged --quiet; then
             git commit -m "Update last known Telegram versions/sizes (${{ steps.date.outputs.TODAY }})"
             git push
